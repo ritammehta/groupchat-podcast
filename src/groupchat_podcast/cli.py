@@ -5,17 +5,16 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
+import beaupy
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.prompt import Confirm, Prompt
-from rich.table import Table
 
 from groupchat_podcast import __version__
-from groupchat_podcast.imessage import DEFAULT_DB_PATH, extract_messages, list_group_chats
+from groupchat_podcast.imessage import DEFAULT_DB_PATH, GroupChat, extract_messages, list_group_chats
 from groupchat_podcast.podcast import PodcastGenerator
 from groupchat_podcast.tts import TTSClient
 
@@ -75,7 +74,9 @@ def get_api_key() -> str:
         console.print(
             "[yellow]No ELEVENLABS_API_KEY found in environment.[/yellow]"
         )
-        api_key = Prompt.ask("Enter your ElevenLabs API key", password=True)
+        api_key = beaupy.prompt("Enter your ElevenLabs API key", secure=True)
+        if api_key is None:
+            raise KeyboardInterrupt
 
     return api_key
 
@@ -100,58 +101,16 @@ def select_group_chat(db_path: Path, page_size: int = 10) -> int:
         console.print("[red]No group chats found![/red]")
         sys.exit(1)
 
-    total_pages = (len(chats) + page_size - 1) // page_size
-    current_page = 0
+    def format_chat(chat: GroupChat) -> str:
+        last_msg = f" (last: {chat.last_message_date.strftime('%Y-%m-%d')})" if chat.last_message_date else ""
+        return f"{chat.display_name} [{chat.participant_count} people]{last_msg}"
 
-    while True:
-        start_idx = current_page * page_size
-        end_idx = min(start_idx + page_size, len(chats))
-        page_chats = chats[start_idx:end_idx]
+    selected = beaupy.select(chats, preprocessor=format_chat, pagination=True, page_size=page_size, cursor_style="cyan")
+    if selected is None:
+        raise KeyboardInterrupt
 
-        table = Table(title=f"Your Group Chats (Page {current_page + 1}/{total_pages})")
-        table.add_column("#", style="cyan", justify="right")
-        table.add_column("Name", style="green")
-        table.add_column("Participants", justify="right")
-        table.add_column("Last Message", style="dim")
-
-        for i, chat in enumerate(page_chats, start_idx + 1):
-            last_msg = ""
-            if chat.last_message_date:
-                last_msg = chat.last_message_date.strftime("%Y-%m-%d")
-            table.add_row(str(i), chat.display_name, str(chat.participant_count), last_msg)
-
-        console.print(table)
-
-        # Build prompt with navigation hints
-        nav_hints = []
-        if current_page > 0:
-            nav_hints.append("'p' for previous")
-        if current_page < total_pages - 1:
-            nav_hints.append("'n' for next")
-
-        prompt_text = "\nSelect a group chat (1-{})".format(len(chats))
-        if nav_hints:
-            prompt_text += " or " + ", ".join(nav_hints)
-
-        choice = Prompt.ask(prompt_text, default="1")
-
-        if choice.lower() == "n" and current_page < total_pages - 1:
-            current_page += 1
-            continue
-        elif choice.lower() == "p" and current_page > 0:
-            current_page -= 1
-            continue
-
-        try:
-            idx = int(choice) - 1
-            if 0 <= idx < len(chats):
-                selected = chats[idx]
-                console.print(f"\n[green]Selected: {selected.display_name}[/green]")
-                return selected.chat_id
-            else:
-                console.print("[red]Invalid selection. Try again.[/red]")
-        except ValueError:
-            console.print("[red]Please enter a number or navigation command.[/red]")
+    console.print(f"\n[green]Selected: {selected.display_name}[/green]")
+    return selected.chat_id
 
 
 def get_date_range() -> Tuple[datetime, datetime]:
@@ -180,10 +139,12 @@ def get_date_range() -> Tuple[datetime, datetime]:
         return dt
 
     while True:
-        start_str = Prompt.ask(
+        start_str = beaupy.prompt(
             "Start date",
-            default=default_start.strftime("%Y-%m-%d"),
+            initial_value=default_start.strftime("%Y-%m-%d"),
         )
+        if start_str is None:
+            raise KeyboardInterrupt
         try:
             start_date = parse_datetime(start_str, is_end=False)
             break
@@ -191,10 +152,12 @@ def get_date_range() -> Tuple[datetime, datetime]:
             console.print("[red]Invalid format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM[/red]")
 
     while True:
-        end_str = Prompt.ask(
+        end_str = beaupy.prompt(
             "End date",
-            default=default_end.strftime("%Y-%m-%d"),
+            initial_value=default_end.strftime("%Y-%m-%d"),
         )
+        if end_str is None:
+            raise KeyboardInterrupt
         try:
             end_date = parse_datetime(end_str, is_end=True)
             break
@@ -224,11 +187,15 @@ def assign_voices(
     for participant in participants:
         while True:
             display_name = participant if participant != "Me" else "You (Me)"
-            voice_input = Prompt.ask(f"  Voice for [cyan]{display_name}[/cyan]")
+            voice_input = beaupy.prompt(f"Voice for {display_name}")
+            if voice_input is None:
+                raise KeyboardInterrupt
 
             if voice_input.lower() == "list":
                 # Search for voices
-                query = Prompt.ask("    Search voices")
+                query = beaupy.prompt("Search voices")
+                if query is None:
+                    raise KeyboardInterrupt
                 try:
                     voices = tts_client.search_voices(query)
                     if not voices:
@@ -267,10 +234,9 @@ def get_output_path() -> Path:
     """Get output file path from user."""
     default_name = f"podcast_{datetime.now().strftime('%Y%m%d_%H%M%S')}.mp3"
 
-    path_str = Prompt.ask(
-        "\nOutput file path",
-        default=default_name,
-    )
+    path_str = beaupy.prompt("Output file path", initial_value=default_name)
+    if path_str is None:
+        raise KeyboardInterrupt
 
     path = Path(path_str)
 
@@ -300,7 +266,10 @@ def show_cost_estimate(
     )
     console.print(panel)
 
-    return Confirm.ask("\nProceed with generation?", default=True)
+    result = beaupy.confirm("Proceed with generation?", default_is_yes=True)
+    if result is None:
+        raise KeyboardInterrupt
+    return result
 
 
 def run_generation(
@@ -362,7 +331,10 @@ def main():
                 "Audio processing requires ffmpeg. Install it with:\n"
                 "  [cyan]brew install ffmpeg[/cyan] (macOS)\n"
             )
-            if not Confirm.ask("Continue anyway?", default=False):
+            result = beaupy.confirm("Continue anyway?", default_is_yes=False)
+            if result is None:
+                raise KeyboardInterrupt
+            if not result:
                 sys.exit(1)
 
         # Get API key

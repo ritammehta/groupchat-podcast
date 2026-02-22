@@ -67,7 +67,15 @@ cli.py
 - `--db-path` uses `Path.expanduser()` so `~` paths work. Error messages differ depending on whether the path was user-provided or the default
 - `--start-date` and `--end-date` must both be provided together; if either is absent, the interactive `get_date_range()` prompt is used instead
 - `KeyboardInterrupt` is caught at the top level of `main()`, producing a clean exit with code 130 (Unix SIGINT convention)
-- Chat selection is paginated (10 per page by default) with `n`/`p` navigation commands. Chats are sorted by `last_message_date` descending (most recent first)
+
+#### beaupy Interactive Prompts
+
+- All interactive prompts use the `beaupy` library (`beaupy.select`, `beaupy.prompt`, `beaupy.confirm`) instead of `rich.prompt.Prompt`/`rich.prompt.Confirm`. Rich is still used for display output (panels, progress bars, styled text)
+- **None-check invariant**: beaupy returns `None` when the user presses Escape or Ctrl+C, rather than raising an exception. Every beaupy call site in `cli.py` checks `if result is None: raise KeyboardInterrupt` to preserve the centralized interrupt handling in `main()`
+- `select_group_chat()` uses `beaupy.select()` with a `preprocessor` function that formats `GroupChat` objects into display strings, and `pagination=True` with a configurable `page_size` (default 10)
+- `get_api_key()` uses `beaupy.prompt(secure=True)` for masked password input
+- `get_date_range()` and `get_output_path()` use `beaupy.prompt(initial_value=...)` to pre-fill editable defaults (replaces `Prompt.ask(default=...)`)
+- `show_cost_estimate()` and the ffmpeg check in `main()` use `beaupy.confirm(default_is_yes=...)` for yes/no confirmation
 
 #### iMessage Database Quirks
 
