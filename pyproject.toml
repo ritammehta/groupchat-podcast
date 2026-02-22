@@ -3,7 +3,8 @@ name = "groupchat-podcast"
 version = "0.1.0"
 description = "Convert iMessage group chats to podcasts using ElevenLabs TTS"
 readme = "README.md"
-requires-python = ">=3.11"
+license = "MIT"
+requires-python = ">=3.9"
 dependencies = [
     "elevenlabs>=1.0.0",
     "pydub>=0.25.0",

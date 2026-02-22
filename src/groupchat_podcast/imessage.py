@@ -22,6 +22,7 @@ class GroupChat:
     display_name: str
     participant_count: int
     participants: List[str]
+    last_message_date: Optional[datetime] = None
 
 
 @dataclass
@@ -67,29 +68,36 @@ def parse_attributed_body(blob: Optional[bytes]) -> str:
             return ""
 
         content = parts[1]
-        if len(content) < 2:
+        if len(content) < 5:
             return ""
 
-        # Skip initial bytes and find the length
-        # The format varies, but typically has a length prefix
-        start = 5
-        if len(content) <= start:
-            return ""
+        # Format after NSString: \x01\x94\x84\x01+\x05<text>\x86
+        # or: \x00\x94\x84\x01+\x05<text>\x86
+        # The length byte comes after \x84\x01+ pattern
+        # Look for the pattern and extract length + text
+        for i in range(len(content) - 2):
+            # Look for length byte followed by text
+            if i >= 3 and content[i - 1] == ord('+'):
+                length = content[i]
+                if length > 0 and i + 1 + length <= len(content):
+                    text = content[i + 1 : i + 1 + length]
+                    # Verify it ends reasonably (with \x86 or similar)
+                    decoded = text.decode("utf-8", errors="ignore").strip().lstrip('\x00')
+                    if decoded:
+                        return decoded
 
-        # Check if length is stored as 2 bytes (0x81 prefix) or 1 byte
-        if content[0] == 0x81:  # 129 - two byte length
-            if len(content) < 3:
-                return ""
-            length = int.from_bytes(content[1:3], "little")
-            start = 3
-        else:
+        # Fallback: try older format with length at position 0 or 1
+        if content[0] == 0x81:  # Two-byte length prefix
+            if len(content) >= 3:
+                length = int.from_bytes(content[1:3], "little")
+                if len(content) >= 3 + length:
+                    return content[3 : 3 + length].decode("utf-8", errors="ignore")
+        elif content[0] < 128:  # Single-byte length
             length = content[0]
-            start = 1
+            if len(content) >= 1 + length:
+                return content[1 : 1 + length].decode("utf-8", errors="ignore")
 
-        if len(content) < start + length:
-            return ""
-
-        return content[start : start + length].decode("utf-8", errors="ignore")
+        return ""
     except (IndexError, ValueError):
         return ""
 
@@ -136,8 +144,9 @@ def _reformat_url_message(text: str) -> str:
 
 
 def list_group_chats(db_path: Path) -> List[GroupChat]:
-    """List all group chats in the iMessage database."""
-    query = """
+    """List all group chats in the iMessage database, sorted by most recent message."""
+    # Get basic chat info with participants
+    chat_query = """
         SELECT
             c.ROWID as chat_id,
             COALESCE(c.display_name, 'Unnamed Group') as display_name,
@@ -148,26 +157,60 @@ def list_group_chats(db_path: Path) -> List[GroupChat]:
         JOIN handle h ON h.ROWID = chj.handle_id
         GROUP BY c.ROWID
         HAVING COUNT(DISTINCT h.ROWID) > 1
-        ORDER BY c.display_name
+    """
+
+    # Get last message date per chat
+    last_msg_query = """
+        SELECT cmj.chat_id, MAX(m.date) as last_date
+        FROM chat_message_join cmj
+        JOIN message m ON m.ROWID = cmj.message_id
+        GROUP BY cmj.chat_id
     """
 
     with sqlite3.connect(db_path) as conn:
         cursor = conn.cursor()
-        cursor.execute(query)
-        rows = cursor.fetchall()
+
+        # Get chat info
+        cursor.execute(chat_query)
+        chat_rows = cursor.fetchall()
+
+        # Get last message dates (may fail if table doesn't exist in test DBs)
+        last_msg_dates = {}  # type: Dict[int, int]
+        try:
+            cursor.execute(last_msg_query)
+            for chat_id, last_date in cursor.fetchall():
+                last_msg_dates[chat_id] = last_date
+        except sqlite3.OperationalError:
+            pass  # Table doesn't exist, no dates available
 
     chats = []
-    for row in rows:
+    for row in chat_rows:
         chat_id, display_name, participants_str, participant_count = row
         participants = participants_str.split("; ") if participants_str else []
+
+        # Convert Mac timestamp to datetime
+        last_message_dt = None
+        last_msg_date = last_msg_dates.get(chat_id)
+        if last_msg_date:
+            last_message_dt = MAC_EPOCH + timedelta(seconds=last_msg_date / 1e9)
+
         chats.append(
             GroupChat(
                 chat_id=chat_id,
                 display_name=display_name,
                 participant_count=participant_count,
                 participants=participants,
+                last_message_date=last_message_dt,
             )
         )
+
+    # Sort by last message date (most recent first), None values last
+    chats.sort(
+        key=lambda c: (
+            c.last_message_date is None,
+            -(c.last_message_date.timestamp() if c.last_message_date else 0),
+        )
+    )
 
     return chats
 

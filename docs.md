@@ -5,8 +5,8 @@ Path: @/
 ### Overview
 
 - CLI tool that converts iMessage group chat conversations into podcast-style audio using ElevenLabs TTS
-- macOS-only: requires access to the local iMessage SQLite database at `~/Library/Messages/chat.db`
-- Produces MP3 files with configurable pauses between messages
+- Supports both fully interactive mode (wizard-style prompts) and non-interactive mode via CLI flags (`--db-path`, `--chat-id`, `--start-date`, `--end-date`, `-o`)
+- macOS-only: reads the local iMessage SQLite database (default `~/Library/Messages/chat.db`, configurable via `--db-path`)
 
 ### How it fits into the larger codebase
 
@@ -34,7 +34,7 @@ Path: @/
 
 | Module | Responsibility |
 |--------|----------------|
-| `cli.py` | Interactive wizard: chat selection, date range, voice assignment, progress display |
+| `cli.py` | Dual-mode interface: argparse flags for scripted use, interactive prompts as fallback. Handles chat selection (paginated), date range, voice assignment, progress display |
 | `imessage.py` | SQLite extraction, timestamp conversion, thread reordering, attachment handling |
 | `tts.py` | ElevenLabs SDK wrapper for TTS generation and voice search |
 | `podcast.py` | Orchestration: extract -> TTS -> stitch; cost estimation |
@@ -42,7 +42,7 @@ Path: @/
 ### Things to Know
 
 - **Mac timestamps**: iMessage uses nanoseconds since January 1, 2001 (not Unix epoch). See `convert_mac_timestamp()` in `imessage.py`
-- **attributedBody parsing**: Newer macOS versions store message text in binary plist blobs. The parser looks for `NSString` marker and handles variable-length encoding
+- **attributedBody parsing**: Newer macOS versions store message text in binary plist blobs. The parser splits on `NSString` marker, scans for a `+` byte pattern to locate the length and text, and falls back to older single/two-byte length prefix formats
 - **Reaction filtering**: Messages with `associated_message_type != 0` are tapbacks/reactions and are excluded
 - **Thread reordering**: Reply messages (those with `thread_originator_guid`) are repositioned to appear immediately after their parent message
 - **Cost estimation**: Uses ElevenLabs pricing of approximately $0.30 per 1000 characters
@@ -66,7 +66,8 @@ Path: @/
 - macOS (for iMessage database access)
 - Full Disk Access permission for terminal app
 - ffmpeg installed (for pydub audio processing)
-- Python 3.11+
+- Python 3.9+
 - ElevenLabs API key
+- MIT licensed
 
 Created and maintained by Nori.

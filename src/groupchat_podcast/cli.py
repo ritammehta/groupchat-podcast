@@ -1,10 +1,11 @@
 """Interactive CLI for podcast generation."""
 
+import argparse
 import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 from rich.console import Console
@@ -13,11 +14,56 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
+from groupchat_podcast import __version__
 from groupchat_podcast.imessage import DEFAULT_DB_PATH, extract_messages, list_group_chats
 from groupchat_podcast.podcast import PodcastGenerator
 from groupchat_podcast.tts import TTSClient
 
 console = Console()
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI argument parser."""
+    parser = argparse.ArgumentParser(
+        prog="groupchat-podcast",
+        description="Convert iMessage group chats into podcast-style audio using ElevenLabs TTS.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+    )
+    parser.add_argument(
+        "--db-path",
+        type=str,
+        default=None,
+        help=f"Path to iMessage chat.db (default: {DEFAULT_DB_PATH})",
+    )
+    parser.add_argument(
+        "--chat-id",
+        type=int,
+        default=None,
+        help="Group chat ID (skips interactive selection)",
+    )
+    parser.add_argument(
+        "--start-date",
+        type=str,
+        default=None,
+        help="Start date in YYYY-MM-DD format",
+    )
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        default=None,
+        help="End date in YYYY-MM-DD format",
+    )
+    parser.add_argument(
+        "--output", "-o",
+        type=str,
+        default=None,
+        help="Output file path (default: podcast_YYYYMMDD_HHMMSS.mp3)",
+    )
+    return parser
 
 
 def get_api_key() -> str:
@@ -34,8 +80,8 @@ def get_api_key() -> str:
     return api_key
 
 
-def select_group_chat(db_path: Path) -> int:
-    """Interactive group chat selection."""
+def select_group_chat(db_path: Path, page_size: int = 10) -> int:
+    """Interactive group chat selection with pagination."""
     console.print("\n[bold]Scanning for group chats...[/bold]")
 
     try:
@@ -54,21 +100,48 @@ def select_group_chat(db_path: Path) -> int:
         console.print("[red]No group chats found![/red]")
         sys.exit(1)
 
-    table = Table(title="Your Group Chats")
-    table.add_column("#", style="cyan", justify="right")
-    table.add_column("Name", style="green")
-    table.add_column("Participants", justify="right")
-
-    for i, chat in enumerate(chats, 1):
-        table.add_row(str(i), chat.display_name, str(chat.participant_count))
-
-    console.print(table)
+    total_pages = (len(chats) + page_size - 1) // page_size
+    current_page = 0
 
     while True:
-        choice = Prompt.ask(
-            "\nSelect a group chat",
-            default="1",
-        )
+        start_idx = current_page * page_size
+        end_idx = min(start_idx + page_size, len(chats))
+        page_chats = chats[start_idx:end_idx]
+
+        table = Table(title=f"Your Group Chats (Page {current_page + 1}/{total_pages})")
+        table.add_column("#", style="cyan", justify="right")
+        table.add_column("Name", style="green")
+        table.add_column("Participants", justify="right")
+        table.add_column("Last Message", style="dim")
+
+        for i, chat in enumerate(page_chats, start_idx + 1):
+            last_msg = ""
+            if chat.last_message_date:
+                last_msg = chat.last_message_date.strftime("%Y-%m-%d")
+            table.add_row(str(i), chat.display_name, str(chat.participant_count), last_msg)
+
+        console.print(table)
+
+        # Build prompt with navigation hints
+        nav_hints = []
+        if current_page > 0:
+            nav_hints.append("'p' for previous")
+        if current_page < total_pages - 1:
+            nav_hints.append("'n' for next")
+
+        prompt_text = "\nSelect a group chat (1-{})".format(len(chats))
+        if nav_hints:
+            prompt_text += " or " + ", ".join(nav_hints)
+
+        choice = Prompt.ask(prompt_text, default="1")
+
+        if choice.lower() == "n" and current_page < total_pages - 1:
+            current_page += 1
+            continue
+        elif choice.lower() == "p" and current_page > 0:
+            current_page -= 1
+            continue
+
         try:
             idx = int(choice) - 1
             if 0 <= idx < len(chats):
@@ -78,50 +151,67 @@ def select_group_chat(db_path: Path) -> int:
             else:
                 console.print("[red]Invalid selection. Try again.[/red]")
         except ValueError:
-            console.print("[red]Please enter a number.[/red]")
+            console.print("[red]Please enter a number or navigation command.[/red]")
 
 
-def get_date_range() -> tuple[datetime, datetime]:
-    """Interactive date range selection."""
+def get_date_range() -> Tuple[datetime, datetime]:
+    """Interactive date range selection with optional time."""
     console.print("\n[bold]Date Range[/bold]")
+    console.print("[dim]Format: YYYY-MM-DD or YYYY-MM-DD HH:MM[/dim]")
 
     # Default to last 30 days
     default_end = datetime.now()
     default_start = datetime(default_end.year, default_end.month, 1)
 
+    def parse_datetime(s: str, is_end: bool = False) -> datetime:
+        """Parse date or datetime string."""
+        s = s.strip()
+        # Try datetime with time first
+        for fmt in ["%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"]:
+            try:
+                return datetime.strptime(s, fmt)
+            except ValueError:
+                continue
+        # Try date only
+        dt = datetime.strptime(s, "%Y-%m-%d")
+        if is_end:
+            # End date defaults to end of day
+            dt = dt.replace(hour=23, minute=59, second=59)
+        return dt
+
     while True:
         start_str = Prompt.ask(
-            "Start date [YYYY-MM-DD]",
+            "Start date",
             default=default_start.strftime("%Y-%m-%d"),
         )
         try:
-            start_date = datetime.strptime(start_str, "%Y-%m-%d")
+            start_date = parse_datetime(start_str, is_end=False)
             break
         except ValueError:
-            console.print("[red]Invalid date format. Use YYYY-MM-DD.[/red]")
+            console.print("[red]Invalid format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM[/red]")
 
     while True:
         end_str = Prompt.ask(
-            "End date [YYYY-MM-DD]",
+            "End date",
             default=default_end.strftime("%Y-%m-%d"),
         )
         try:
-            end_date = datetime.strptime(end_str, "%Y-%m-%d")
-            # Set to end of day
-            end_date = end_date.replace(hour=23, minute=59, second=59)
+            end_date = parse_datetime(end_str, is_end=True)
             break
         except ValueError:
-            console.print("[red]Invalid date format. Use YYYY-MM-DD.[/red]")
+            console.print("[red]Invalid format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM[/red]")
 
     if end_date < start_date:
         console.print("[yellow]End date is before start date. Swapping.[/yellow]")
         start_date, end_date = end_date, start_date
 
+    console.print(f"[dim]Range: {start_date.strftime('%Y-%m-%d %H:%M')} to {end_date.strftime('%Y-%m-%d %H:%M')}[/dim]")
+
     return start_date, end_date
 
 
 def assign_voices(
-    participants: list[str],
+    participants: List[str],
     tts_client: TTSClient,
 ) -> Dict[str, str]:
     """Interactive voice assignment for participants."""
@@ -253,87 +343,127 @@ def run_generation(
 
 def main():
     """Main CLI entry point."""
-    console.print(
-        Panel(
-            "[bold blue]iMessage Group Chat to Podcast[/bold blue]\n\n"
-            "Convert your group chat conversations into podcast-style audio!",
-            border_style="blue",
-        )
-    )
+    try:
+        args = build_parser().parse_args()
 
-    # Check for ffmpeg
-    import shutil
-    if not shutil.which("ffmpeg"):
         console.print(
-            "[red]⚠ ffmpeg not found![/red]\n"
-            "Audio processing requires ffmpeg. Install it with:\n"
-            "  [cyan]brew install ffmpeg[/cyan] (macOS)\n"
+            Panel(
+                "[bold blue]iMessage Group Chat to Podcast[/bold blue]\n\n"
+                "Convert your group chat conversations into podcast-style audio!",
+                border_style="blue",
+            )
         )
-        if not Confirm.ask("Continue anyway?", default=False):
+
+        # Check for ffmpeg
+        import shutil
+        if not shutil.which("ffmpeg"):
+            console.print(
+                "[red]⚠ ffmpeg not found![/red]\n"
+                "Audio processing requires ffmpeg. Install it with:\n"
+                "  [cyan]brew install ffmpeg[/cyan] (macOS)\n"
+            )
+            if not Confirm.ask("Continue anyway?", default=False):
+                sys.exit(1)
+
+        # Get API key
+        api_key = get_api_key()
+        tts_client = TTSClient(api_key=api_key)
+
+        # Check API key works
+        console.print("\n[dim]Validating API key...[/dim]")
+        try:
+            tts_client.search_voices("")
+            console.print("[green]✓ API key valid[/green]")
+        except Exception as e:
+            console.print(f"[red]Invalid API key: {e}[/red]")
             sys.exit(1)
 
-    # Get API key
-    api_key = get_api_key()
-    tts_client = TTSClient(api_key=api_key)
+        # Database path
+        if args.db_path is not None:
+            db_path = Path(args.db_path).expanduser()
+        else:
+            db_path = DEFAULT_DB_PATH
 
-    # Check API key works
-    console.print("\n[dim]Validating API key...[/dim]")
-    try:
-        tts_client.search_voices("")
-        console.print("[green]✓ API key valid[/green]")
-    except Exception as e:
-        console.print(f"[red]Invalid API key: {e}[/red]")
-        sys.exit(1)
+        if not db_path.exists():
+            console.print(f"[red]iMessage database not found at {db_path}[/red]")
+            if args.db_path is not None:
+                console.print("[yellow]Check that the --db-path you provided is correct.[/yellow]")
+            else:
+                console.print(
+                    "\n[yellow]Make sure you've granted Full Disk Access to your terminal.[/yellow]"
+                )
+            sys.exit(1)
 
-    # Database path
-    db_path = DEFAULT_DB_PATH
-    if not db_path.exists():
-        console.print(f"[red]iMessage database not found at {db_path}[/red]")
-        sys.exit(1)
+        # Select group chat
+        if args.chat_id is not None:
+            chat_id = args.chat_id
+        else:
+            chat_id = select_group_chat(db_path)
 
-    # Select group chat
-    chat_id = select_group_chat(db_path)
+        # Get date range
+        if args.start_date is not None and args.end_date is not None:
+            try:
+                start_date = datetime.strptime(args.start_date, "%Y-%m-%d")
+                end_date = datetime.strptime(args.end_date, "%Y-%m-%d").replace(
+                    hour=23, minute=59, second=59,
+                )
+            except ValueError:
+                console.print("[red]Invalid date format. Use YYYY-MM-DD.[/red]")
+                sys.exit(1)
+        elif args.start_date is not None or args.end_date is not None:
+            console.print("[red]Both --start-date and --end-date must be provided together.[/red]")
+            sys.exit(1)
+        else:
+            start_date, end_date = get_date_range()
 
-    # Get date range
-    start_date, end_date = get_date_range()
+        # Get participants for the chat
+        messages = extract_messages(db_path, chat_id, start_date, end_date)
 
-    # Get participants for the chat
-    messages = extract_messages(db_path, chat_id, start_date, end_date)
+        if not messages:
+            console.print("[yellow]No messages found in that date range.[/yellow]")
+            sys.exit(0)
 
-    if not messages:
-        console.print("[yellow]No messages found in that date range.[/yellow]")
-        sys.exit(0)
+        # Count messages with actual text content
+        text_messages = [m for m in messages if m.text and m.text.strip()]
+        console.print(f"\n[green]Found {len(messages)} messages ({len(text_messages)} with text content).[/green]")
 
-    console.print(f"\n[green]Found {len(messages)} messages.[/green]")
+        # Get unique senders
+        senders = sorted(set(m.sender for m in messages if m.sender))
+        console.print(f"Participants: {', '.join(senders)}")
 
-    # Get unique senders
-    senders = sorted(set(m.sender for m in messages if m.sender))
-    console.print(f"Participants: {', '.join(senders)}")
+        # Assign voices
+        voice_map = assign_voices(senders, tts_client)
 
-    # Assign voices
-    voice_map = assign_voices(senders, tts_client)
+        # Get output path
+        if args.output is not None:
+            output_path = Path(args.output)
+            if output_path.suffix != ".mp3":
+                output_path = output_path.with_suffix(".mp3")
+        else:
+            output_path = get_output_path()
 
-    # Get output path
-    output_path = get_output_path()
+        # Create generator
+        generator = PodcastGenerator(tts_client=tts_client, voice_map=voice_map)
 
-    # Create generator
-    generator = PodcastGenerator(tts_client=tts_client, voice_map=voice_map)
+        # Show estimate and confirm
+        if not show_cost_estimate(generator, db_path, chat_id, start_date, end_date):
+            console.print("[yellow]Cancelled.[/yellow]")
+            sys.exit(0)
 
-    # Show estimate and confirm
-    if not show_cost_estimate(generator, db_path, chat_id, start_date, end_date):
-        console.print("[yellow]Cancelled.[/yellow]")
-        sys.exit(0)
+        # Generate!
+        console.print()
+        run_generation(generator, db_path, chat_id, start_date, end_date, output_path)
 
-    # Generate!
-    console.print()
-    run_generation(generator, db_path, chat_id, start_date, end_date, output_path)
-
-    console.print(
-        Panel(
-            f"[bold green]Podcast saved to:[/bold green]\n{output_path.absolute()}",
-            border_style="green",
+        console.print(
+            Panel(
+                f"[bold green]Podcast saved to:[/bold green]\n{output_path.absolute()}",
+                border_style="green",
+            )
         )
-    )
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted. Exiting.[/yellow]")
+        sys.exit(130)
 
 
 if __name__ == "__main__":
