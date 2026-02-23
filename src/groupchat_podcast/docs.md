@@ -6,7 +6,7 @@ Path: @/src/groupchat_podcast
 
 - Core Python package for iMessage-to-podcast conversion
 - Four modules: CLI interaction, iMessage extraction, TTS generation, and audio stitching
-- Designed as a pipeline: extract messages -> generate audio per message -> stitch into single MP3
+- Designed as a pipeline: extract messages -> merge consecutive same-sender messages -> preprocess text for TTS -> generate audio per message -> stitch into single MP3
 
 ### How it fits into the larger codebase
 
@@ -36,8 +36,8 @@ cli.py
 
 1. **CLI (`cli.py`)**: `build_parser()` defines argparse flags; `main()` checks each flag and falls back to interactive prompts when absent. The entire `main()` body is wrapped in a `try/except KeyboardInterrupt` that exits with code 130
 2. **Extraction (`imessage.py`)**: Queries SQLite, converts timestamps, parses attributedBody blobs, reorders threads. `list_group_chats()` now returns chats sorted by most recent message date
-3. **TTS (`tts.py`)**: Converts each message text to MP3 bytes via ElevenLabs
-4. **Stitching (`podcast.py`)**: Concatenates MP3 segments with configurable silence gaps
+3. **TTS (`tts.py`)**: Preprocesses text (emoji stripping, abbreviation expansion, caps normalization) then converts to MP3 bytes via ElevenLabs. Accepts optional `voice_settings` for tuning voice parameters
+4. **Merging and stitching (`podcast.py`)**: Merges consecutive same-sender messages within a 5-minute window before TTS generation, then concatenates MP3 segments with configurable silence gaps
 
 #### Key Classes
 
@@ -57,6 +57,8 @@ cli.py
 | `list_group_chats()` | imessage.py | Returns all group chats (>1 participant) from database, sorted by most recent message |
 | `extract_messages()` | imessage.py | Extracts messages for a chat within date range |
 | `parse_attributed_body()` | imessage.py | Parses binary plist blob to extract text |
+| `merge_consecutive_messages()` | podcast.py | Combines consecutive same-sender messages within a time window into single messages |
+| `preprocess_text_for_tts()` | tts.py | Normalizes chat text (emojis, abbreviations, caps, punctuation) for natural TTS output |
 | `stitch_audio()` | podcast.py | Concatenates MP3 files with silence between |
 
 ### Things to Know
@@ -89,6 +91,7 @@ cli.py
 
 - **TTS model**: Uses `eleven_multilingual_v2` model with `mp3_44100_128` output format
 - **Voice mapping**: `PodcastGenerator` accepts a `voice_map` dict mapping sender identifiers to ElevenLabs voice IDs. Use `_default` key for fallback voice
+- **Voice settings**: `TTSClient` accepts an optional `voice_settings` dict (keys: `stability`, `similarity_boost`, `style`, `use_speaker_boost`) forwarded to every ElevenLabs API call. When `None`, the API uses its defaults
 - **Temporary files**: During generation, individual message MP3s are written to a temp directory, then stitched together
 
 #### Message Text Processing
@@ -98,6 +101,21 @@ cli.py
 - **URL formatting by message type**: URL-only messages become `"Check out this link: {title}"`. Messages with mixed text and URLs replace each URL inline with `"this link: {title}"`
 - **Network I/O during extraction**: Because `_reformat_url_message()` is called from `extract_messages()`, message extraction is no longer a purely offline operation. The CLI displays "Extracting messages and resolving link previews..." to indicate this
 - **Empty message filtering**: Messages without text are skipped during podcast generation
+
+#### Message Merging
+
+- **Purpose**: Consecutive rapid-fire messages from the same sender are merged into a single message so TTS generates them as one coherent utterance instead of isolated fragments
+- **Time window**: Messages from the same sender are merged when each successive gap is within 5 minutes (300 seconds). The gap is measured between each adjacent pair, not from the first message of the run
+- **Text joining**: Uses `_smart_join()` -- appends with a comma when the preceding text has no trailing punctuation (`.!?`), otherwise joins with a space. This produces natural-sounding compound sentences
+- **Pipeline position**: Merging runs after empty-message filtering but before TTS generation. The merged `Message` retains the timestamp, guid, and thread info of the first message in the run
+
+#### Text Preprocessing for TTS
+
+- **Purpose**: `preprocess_text_for_tts()` normalizes casual chat text so ElevenLabs reads it naturally. Applied to each message immediately before the TTS API call
+- **Transformation order**: Strip emojis -> expand abbreviations -> uppercase mispronounced abbreviations -> reduce repeated punctuation -> lowercase excessive all-caps -> collapse whitespace. Order matters: abbreviation expansion must happen before uppercase forcing
+- **Three abbreviation categories**: (1) Expanded to spoken form (e.g., `idk` -> `I don't know`), defined in `_EXPAND_ABBREVIATIONS`. (2) Forced uppercase so TTS spells them out (e.g., `brb` -> `BRB`), defined in `_UPPERCASE_ABBREVIATIONS`. (3) Known abbreviations preserved during caps normalization (e.g., `LMAO` is not lowercased), defined in `_KNOWN_ABBREVIATIONS`
+- **Conditional "bc" handling**: The abbreviation "bc" is only expanded to "because" when not preceded by a number or the word "century" (to preserve "500 bc" and similar historical references)
+- **All-caps normalization**: Words of 4+ uppercase characters are lowercased unless they appear in `_KNOWN_ABBREVIATIONS`. This prevents TTS from shouting words like "WHAT" while preserving intentional abbreviations
 
 #### Cost Estimation
 

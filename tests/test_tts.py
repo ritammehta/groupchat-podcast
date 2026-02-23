@@ -2,7 +2,7 @@
 
 import pytest
 
-from groupchat_podcast.tts import TTSClient, Voice
+from groupchat_podcast.tts import TTSClient, Voice, preprocess_text_for_tts
 
 
 class TestTTSClient:
@@ -123,3 +123,137 @@ class TestTTSClient:
         TTSClient(api_key="my-secret-key")
 
         mock_elevenlabs.assert_called_once_with(api_key="my-secret-key")
+
+    def test_generate_forwards_voice_settings(self, mocker):
+        """Voice settings from constructor should be passed to API."""
+        mock_elevenlabs = mocker.patch("groupchat_podcast.tts.ElevenLabs")
+        mock_client = mock_elevenlabs.return_value
+        mock_client.text_to_speech.convert.return_value = b"audio"
+
+        settings = {"stability": 0.4, "similarity_boost": 0.5, "style": 0.0}
+        client = TTSClient(api_key="test-key", voice_settings=settings)
+        client.generate("Hello", voice_id="voice-id")
+
+        call_kwargs = mock_client.text_to_speech.convert.call_args.kwargs
+        assert call_kwargs["voice_settings"] == settings
+
+    def test_generate_without_voice_settings(self, mocker):
+        """Without voice settings, API call should not include them."""
+        mock_elevenlabs = mocker.patch("groupchat_podcast.tts.ElevenLabs")
+        mock_client = mock_elevenlabs.return_value
+        mock_client.text_to_speech.convert.return_value = b"audio"
+
+        client = TTSClient(api_key="test-key")
+        client.generate("Hello", voice_id="voice-id")
+
+        call_kwargs = mock_client.text_to_speech.convert.call_args.kwargs
+        assert "voice_settings" not in call_kwargs
+
+
+class TestPreprocessTextForTts:
+    """Tests for chat text preprocessing before TTS."""
+
+    def test_removes_emojis_preserving_text(self):
+        """Emojis should be stripped while keeping surrounding words."""
+        result = preprocess_text_for_tts("Hey 😊 how are you 🎉")
+        assert "😊" not in result
+        assert "🎉" not in result
+        assert "Hey" in result
+        assert "how are you" in result
+
+    def test_expands_idk(self):
+        """idk should expand to I don't know."""
+        result = preprocess_text_for_tts("idk what to do")
+        assert "I don't know" in result
+        assert "idk" not in result.lower().split()
+
+    def test_expands_multiple_abbreviations(self):
+        """Multiple abbreviations in one message should all expand."""
+        result = preprocess_text_for_tts("btw lmk if you can come")
+        assert "by the way" in result
+        assert "let me know" in result
+
+    def test_expands_abbreviations_case_insensitive(self):
+        """Abbreviations should expand regardless of case."""
+        result = preprocess_text_for_tts("IDK man")
+        assert "I don't know" in result
+
+    def test_uppercases_tts_abbreviations(self):
+        """Abbreviations that TTS mispronounces should be uppercased."""
+        result = preprocess_text_for_tts("brb going to store")
+        assert "BRB" in result
+
+        result = preprocess_text_for_tts("that's funny lmao")
+        assert "LMAO" in result
+
+        result = preprocess_text_for_tts("imo it's overrated")
+        assert "IMO" in result
+
+        result = preprocess_text_for_tts("that's annoying af")
+        assert "AF" in result
+
+    def test_reduces_repeated_exclamation(self):
+        """Multiple exclamation marks should reduce to one."""
+        result = preprocess_text_for_tts("No way!!!")
+        assert "!!!" not in result
+        assert result.endswith("!")
+
+    def test_reduces_repeated_question_marks(self):
+        """Multiple question marks should reduce to one."""
+        result = preprocess_text_for_tts("Really???")
+        assert "???" not in result
+        assert result.endswith("?")
+
+    def test_preserves_ellipsis(self):
+        """Ellipsis should be preserved as it creates useful TTS hesitation."""
+        result = preprocess_text_for_tts("Well... I guess so")
+        assert "..." in result
+
+    def test_lowercases_excessive_caps(self):
+        """Words 4+ chars in ALL CAPS should be lowercased."""
+        result = preprocess_text_for_tts("WHAT THE HELL is going on")
+        assert "what" in result
+        assert "hell" in result
+
+    def test_preserves_known_uppercase_abbreviations(self):
+        """Known abbreviations should not be lowercased by caps normalizer."""
+        result = preprocess_text_for_tts("LMAO that's hilarious")
+        assert "LMAO" in result
+
+    def test_clean_text_passes_through(self):
+        """Normal text without special chat content should pass through."""
+        text = "Hey how are you doing today"
+        result = preprocess_text_for_tts(text)
+        assert result == text
+
+    def test_bc_expanded_as_because(self):
+        """bc should expand to because in normal context."""
+        result = preprocess_text_for_tts("I left bc it was boring")
+        assert "because" in result
+
+    def test_bc_not_expanded_after_number(self):
+        """bc should not expand when preceded by a number (e.g. 300 bc)."""
+        result = preprocess_text_for_tts("that was like 300 bc")
+        assert "because" not in result
+        assert "bc" in result
+
+    def test_bc_not_expanded_after_century(self):
+        """bc should not expand after 'century'."""
+        result = preprocess_text_for_tts("the 3rd century bc was wild")
+        assert "because" not in result
+        assert "bc" in result
+
+    def test_collapses_whitespace(self):
+        """Multiple spaces should collapse to one, leading/trailing stripped."""
+        result = preprocess_text_for_tts("  hey   how   are   you  ")
+        assert result == "hey how are you"
+
+    def test_pls_expanded_to_please(self):
+        """pls and plz should expand to please."""
+        assert "please" in preprocess_text_for_tts("pls help me")
+        assert "please" in preprocess_text_for_tts("plz come over")
+
+    def test_fr_does_not_expand_inside_words(self):
+        """'fr' inside words like 'from' or 'friend' should not expand."""
+        assert "from" in preprocess_text_for_tts("I'm coming from school")
+        assert "friend" in preprocess_text_for_tts("She's my friend")

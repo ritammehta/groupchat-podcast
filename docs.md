@@ -36,8 +36,8 @@ Path: @/
 |--------|----------------|
 | `cli.py` | Dual-mode interface: argparse flags for scripted use, beaupy interactive prompts as fallback. Handles chat selection (paginated `beaupy.select`), date range, voice assignment, progress display |
 | `imessage.py` | SQLite extraction, timestamp conversion, thread reordering, attachment handling, URL-to-title resolution (makes HTTP requests during extraction) |
-| `tts.py` | ElevenLabs SDK wrapper for TTS generation and voice search |
-| `podcast.py` | Orchestration: extract -> TTS -> stitch; cost estimation |
+| `tts.py` | ElevenLabs SDK wrapper for TTS generation and voice search; text preprocessing (emoji stripping, abbreviation expansion, caps normalization) for natural chat-to-speech |
+| `podcast.py` | Orchestration: extract -> merge consecutive messages -> preprocess text -> TTS -> stitch; cost estimation |
 
 ### Things to Know
 

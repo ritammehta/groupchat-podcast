@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 
 from groupchat_podcast.imessage import Message
-from groupchat_podcast.podcast import PodcastGenerator, stitch_audio
+from groupchat_podcast.podcast import (
+    PodcastGenerator,
+    merge_consecutive_messages,
+    stitch_audio,
+)
 
 # Check if ffmpeg is available
 FFMPEG_AVAILABLE = shutil.which("ffmpeg") is not None
@@ -182,10 +186,10 @@ class TestPodcastGeneratorWithFfmpeg:
         mocker.patch(
             "groupchat_podcast.podcast.extract_messages",
             return_value=[
-                Message(sender="+15551234567", text="Hello", timestamp=datetime.now(), guid="1"),
-                Message(sender="+15551234567", text="", timestamp=datetime.now(), guid="2"),
-                Message(sender="+15551234567", text=None, timestamp=datetime.now(), guid="3"),
-                Message(sender="+15551234567", text="World", timestamp=datetime.now(), guid="4"),
+                Message(sender="Alice", text="Hello", timestamp=datetime(2024, 1, 15, 10, 0, 0), guid="1"),
+                Message(sender="Bob", text="", timestamp=datetime(2024, 1, 15, 10, 0, 10), guid="2"),
+                Message(sender="Charlie", text=None, timestamp=datetime(2024, 1, 15, 10, 0, 20), guid="3"),
+                Message(sender="Dave", text="World", timestamp=datetime(2024, 1, 15, 10, 0, 30), guid="4"),
             ],
         )
 
@@ -228,6 +232,190 @@ class TestPodcastGeneratorWithFfmpeg:
 
         assert len(progress_calls) > 0
         assert progress_calls[-1][0] == progress_calls[-1][1]
+
+
+class TestMergeConsecutiveMessages:
+    """Tests for merging rapid-fire same-sender messages."""
+
+    def test_merges_same_sender_within_time_window(self):
+        """Consecutive messages from same sender within 5 min should merge."""
+        messages = [
+            Message(sender="Alice", text="Hey", timestamp=datetime(2024, 1, 15, 10, 0, 0), guid="1"),
+            Message(sender="Alice", text="how are you", timestamp=datetime(2024, 1, 15, 10, 0, 30), guid="2"),
+            Message(sender="Alice", text="long time no see", timestamp=datetime(2024, 1, 15, 10, 1, 0), guid="3"),
+        ]
+        result = merge_consecutive_messages(messages)
+        assert len(result) == 1
+        assert "Hey" in result[0].text
+        assert "how are you" in result[0].text
+        assert "long time no see" in result[0].text
+
+    def test_does_not_merge_different_senders(self):
+        """Messages from different senders should stay separate."""
+        messages = [
+            Message(sender="Alice", text="Hey", timestamp=datetime(2024, 1, 15, 10, 0, 0), guid="1"),
+            Message(sender="Bob", text="Hi there", timestamp=datetime(2024, 1, 15, 10, 0, 10), guid="2"),
+            Message(sender="Alice", text="What's up", timestamp=datetime(2024, 1, 15, 10, 0, 20), guid="3"),
+        ]
+        result = merge_consecutive_messages(messages)
+        assert len(result) == 3
+
+    def test_does_not_merge_beyond_time_gap(self):
+        """Same sender messages beyond 5 min apart should not merge."""
+        messages = [
+            Message(sender="Alice", text="Hey", timestamp=datetime(2024, 1, 15, 10, 0, 0), guid="1"),
+            Message(sender="Alice", text="Anyone there", timestamp=datetime(2024, 1, 15, 10, 6, 0), guid="2"),
+        ]
+        result = merge_consecutive_messages(messages)
+        assert len(result) == 2
+
+    def test_smart_separator_adds_comma_without_punctuation(self):
+        """Messages without trailing punctuation should be joined with comma."""
+        messages = [
+            Message(sender="Alice", text="Hey", timestamp=datetime(2024, 1, 15, 10, 0, 0), guid="1"),
+            Message(sender="Alice", text="how are you", timestamp=datetime(2024, 1, 15, 10, 0, 10), guid="2"),
+        ]
+        result = merge_consecutive_messages(messages)
+        assert result[0].text == "Hey, how are you"
+
+    def test_smart_separator_uses_space_after_punctuation(self):
+        """Messages with trailing punctuation should be joined with space."""
+        messages = [
+            Message(sender="Alice", text="Am I too critical?", timestamp=datetime(2024, 1, 15, 10, 0, 0), guid="1"),
+            Message(sender="Alice", text="Truly love it", timestamp=datetime(2024, 1, 15, 10, 0, 10), guid="2"),
+        ]
+        result = merge_consecutive_messages(messages)
+        assert result[0].text == "Am I too critical? Truly love it"
+
+    def test_preserves_sender_and_timestamp_from_first_message(self):
+        """Merged message should use first message's sender and timestamp."""
+        first_ts = datetime(2024, 1, 15, 10, 0, 0)
+        messages = [
+            Message(sender="Alice", text="Hey", timestamp=first_ts, guid="first-guid"),
+            Message(sender="Alice", text="what's up", timestamp=datetime(2024, 1, 15, 10, 0, 30), guid="second-guid"),
+        ]
+        result = merge_consecutive_messages(messages)
+        assert result[0].sender == "Alice"
+        assert result[0].timestamp == first_ts
+        assert result[0].guid == "first-guid"
+
+    def test_real_world_tv_show_monologue(self):
+        """Stream-of-consciousness TV show texts should merge into one message."""
+        messages = [
+            Message(sender="Alex", text="Man", timestamp=datetime(2024, 1, 15, 22, 0, 0), guid="1"),
+            Message(sender="Alex", text="Good industry ep though", timestamp=datetime(2024, 1, 15, 22, 0, 5), guid="2"),
+            Message(sender="Alex", text="Harper / yas stuff often feels unearned", timestamp=datetime(2024, 1, 15, 22, 0, 12), guid="3"),
+            Message(sender="Alex", text="Am I too critical of this show?", timestamp=datetime(2024, 1, 15, 22, 0, 20), guid="4"),
+            Message(sender="Alex", text="Truly love it and find it totally engaging", timestamp=datetime(2024, 1, 15, 22, 0, 28), guid="5"),
+            Message(sender="Alex", text="Max minghella is delivering a lifetime performance", timestamp=datetime(2024, 1, 15, 22, 0, 40), guid="6"),
+            Message(sender="Alex", text="But just like sometimes I feel like it just does not earn its big moments", timestamp=datetime(2024, 1, 15, 22, 0, 55), guid="7"),
+            Message(sender="Alex", text="Like I think it's outrunning some obvious criticisms by being formally daring and extremely current", timestamp=datetime(2024, 1, 15, 22, 1, 10), guid="8"),
+            Message(sender="Alex", text='But I think that the creators have thrown out too much of the baby with the bathwater when trying to push the envelope on "what constitutes prestige tv"', timestamp=datetime(2024, 1, 15, 22, 1, 30), guid="9"),
+            Message(sender="Alex", text="They're not earning their turns", timestamp=datetime(2024, 1, 15, 22, 1, 40), guid="10"),
+            Message(sender="Alex", text="Need to listen to No Notes now that I'm all caught up", timestamp=datetime(2024, 1, 15, 22, 1, 50), guid="11"),
+        ]
+        result = merge_consecutive_messages(messages)
+        assert len(result) == 1
+        # After "Am I too critical of this show?" there should be a space (not comma) before "Truly"
+        assert "show? Truly" in result[0].text
+
+    def test_partial_merge_with_interleaved_senders(self):
+        """Only consecutive same-sender runs should merge."""
+        messages = [
+            Message(sender="Alice", text="Hey", timestamp=datetime(2024, 1, 15, 10, 0, 0), guid="1"),
+            Message(sender="Alice", text="what's up", timestamp=datetime(2024, 1, 15, 10, 0, 10), guid="2"),
+            Message(sender="Bob", text="Not much", timestamp=datetime(2024, 1, 15, 10, 0, 20), guid="3"),
+            Message(sender="Alice", text="Cool", timestamp=datetime(2024, 1, 15, 10, 0, 30), guid="4"),
+            Message(sender="Alice", text="wanna hang", timestamp=datetime(2024, 1, 15, 10, 0, 40), guid="5"),
+        ]
+        result = merge_consecutive_messages(messages)
+        assert len(result) == 3
+        assert "Hey" in result[0].text and "what's up" in result[0].text
+        assert result[1].text == "Not much"
+        assert "Cool" in result[2].text and "wanna hang" in result[2].text
+
+    def test_empty_list_returns_empty(self):
+        """Empty message list should return empty list."""
+        result = merge_consecutive_messages([])
+        assert result == []
+
+    def test_single_message_unchanged(self):
+        """A single message should pass through unchanged."""
+        messages = [
+            Message(sender="Alice", text="Hey", timestamp=datetime(2024, 1, 15, 10, 0, 0), guid="1"),
+        ]
+        result = merge_consecutive_messages(messages)
+        assert len(result) == 1
+        assert result[0].text == "Hey"
+
+    def test_preserves_has_attachment_if_any(self):
+        """Merged message should have has_attachment=True if any message had one."""
+        messages = [
+            Message(sender="Alice", text="Look at this", timestamp=datetime(2024, 1, 15, 10, 0, 0), guid="1", has_attachment=False),
+            Message(sender="Alice", text="cool right", timestamp=datetime(2024, 1, 15, 10, 0, 10), guid="2", has_attachment=True),
+        ]
+        result = merge_consecutive_messages(messages)
+        assert len(result) == 1
+        assert result[0].has_attachment is True
+
+
+@requires_ffmpeg
+class TestPodcastGeneratorPreprocessing:
+    """Tests for preprocessing and merging in the generation pipeline."""
+
+    def test_preprocessing_applied_before_tts(self, mocker, tmp_path, sample_audio_bytes):
+        """Text should be preprocessed before reaching the TTS client."""
+        mock_tts = mocker.Mock()
+        mock_tts.generate.return_value = sample_audio_bytes
+
+        mocker.patch(
+            "groupchat_podcast.podcast.extract_messages",
+            return_value=[
+                Message(sender="Alice", text="idk 😊 that's CRAZY!!!", timestamp=datetime(2024, 1, 15, 10, 0, 0), guid="1"),
+            ],
+        )
+
+        generator = PodcastGenerator(tts_client=mock_tts, voice_map={"_default": "voice"})
+        generator.generate(
+            db_path=Path("/fake/path"),
+            chat_id=1,
+            start_date=datetime(2024, 1, 1),
+            end_date=datetime(2024, 1, 31),
+            output_path=tmp_path / "podcast.mp3",
+        )
+
+        text_sent = mock_tts.generate.call_args_list[0].args[0]
+        assert "😊" not in text_sent
+        assert "idk" not in text_sent.lower().split()
+        assert "I don't know" in text_sent
+        assert "!!!" not in text_sent
+
+    def test_merging_reduces_tts_calls(self, mocker, tmp_path, sample_audio_bytes):
+        """Consecutive same-sender messages should be merged, reducing TTS calls."""
+        mock_tts = mocker.Mock()
+        mock_tts.generate.return_value = sample_audio_bytes
+
+        mocker.patch(
+            "groupchat_podcast.podcast.extract_messages",
+            return_value=[
+                Message(sender="Alice", text="Hey", timestamp=datetime(2024, 1, 15, 10, 0, 0), guid="1"),
+                Message(sender="Alice", text="how are you", timestamp=datetime(2024, 1, 15, 10, 0, 10), guid="2"),
+                Message(sender="Alice", text="long time no see", timestamp=datetime(2024, 1, 15, 10, 0, 20), guid="3"),
+                Message(sender="Bob", text="I'm good!", timestamp=datetime(2024, 1, 15, 10, 0, 30), guid="4"),
+            ],
+        )
+
+        generator = PodcastGenerator(tts_client=mock_tts, voice_map={"_default": "voice"})
+        generator.generate(
+            db_path=Path("/fake/path"),
+            chat_id=1,
+            start_date=datetime(2024, 1, 1),
+            end_date=datetime(2024, 1, 31),
+            output_path=tmp_path / "podcast.mp3",
+        )
+
+        # 3 Alice messages merged into 1 + 1 Bob message = 2 TTS calls
+        assert mock_tts.generate.call_count == 2
 
 
 class TestPodcastGeneratorNoFfmpeg:
