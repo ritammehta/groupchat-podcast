@@ -8,7 +8,78 @@ from typing import Any, Callable, Dict, List, Optional
 from pydub import AudioSegment
 
 from groupchat_podcast.imessage import Message, extract_messages
-from groupchat_podcast.tts import TTSClient
+from groupchat_podcast.tts import TTSClient, preprocess_text_for_tts
+
+
+def _smart_join(existing: str, new: str) -> str:
+    """Join two texts with comma or space depending on trailing punctuation."""
+    if not existing:
+        return new
+    if not new:
+        return existing
+    if existing[-1] in ".!?":
+        return existing + " " + new
+    return existing + ", " + new
+
+
+def merge_consecutive_messages(
+    messages: List[Message], max_gap_seconds: int = 300,
+) -> List[Message]:
+    """Merge consecutive same-sender messages within a time window.
+
+    Messages from the same sender where each successive gap is within
+    max_gap_seconds are combined into a single Message. Text is joined
+    with smart separators (comma when no trailing punctuation, space
+    when there is).
+
+    Args:
+        messages: List of messages in chronological order
+        max_gap_seconds: Maximum seconds between messages to merge
+
+    Returns:
+        New list of messages with consecutive runs merged
+    """
+    if not messages:
+        return []
+
+    result: List[Message] = []
+    current = messages[0]
+    merged_text = current.text or ""
+    has_any_attachment = current.has_attachment
+
+    for i in range(1, len(messages)):
+        msg = messages[i]
+        gap = (msg.timestamp - messages[i - 1].timestamp).total_seconds()
+
+        if msg.sender == current.sender and gap <= max_gap_seconds:
+            merged_text = _smart_join(merged_text, msg.text or "")
+            has_any_attachment = has_any_attachment or msg.has_attachment
+        else:
+            result.append(Message(
+                sender=current.sender,
+                text=merged_text,
+                timestamp=current.timestamp,
+                guid=current.guid,
+                thread_originator_guid=current.thread_originator_guid,
+                has_attachment=has_any_attachment,
+                attachment_type=current.attachment_type,
+            ))
+            current = msg
+            merged_text = msg.text or ""
+            has_any_attachment = msg.has_attachment
+
+    # Append the last run
+    result.append(Message(
+        sender=current.sender,
+        text=merged_text,
+        timestamp=current.timestamp,
+        guid=current.guid,
+        thread_originator_guid=current.thread_originator_guid,
+        has_attachment=has_any_attachment,
+        attachment_type=current.attachment_type,
+    ))
+
+    return result
 
 
 def stitch_audio(
@@ -97,6 +168,9 @@ class PodcastGenerator:
         if not messages:
             raise ValueError("No messages to generate podcast from")
 
+        # Merge consecutive same-sender messages
+        messages = merge_consecutive_messages(messages)
+
         total = len(messages)
         segment_paths: List[Path] = []
 
@@ -117,8 +191,11 @@ class PodcastGenerator:
                     )
                     continue
 
+                # Preprocess text for TTS
+                text = preprocess_text_for_tts(message.text)
+
                 # Generate audio
-                audio_bytes = self._tts.generate(message.text, voice_id=voice_id)
+                audio_bytes = self._tts.generate(text, voice_id=voice_id)
 
                 # Save to temp file
                 segment_path = tmp_path / f"segment_{i:05d}.mp3"
@@ -155,8 +232,11 @@ class PodcastGenerator:
         """
         messages = extract_messages(db_path, chat_id, start_date, end_date)
         messages = [m for m in messages if m.text and m.text.strip()]
+        messages = merge_consecutive_messages(messages)
 
-        total_chars = sum(len(m.text) for m in messages if m.text)
+        total_chars = sum(
+            len(preprocess_text_for_tts(m.text)) for m in messages if m.text
+        )
 
         # ElevenLabs pricing: roughly $0.30 per 1000 characters on Creator plan
         cost_per_char = 0.30 / 1000
