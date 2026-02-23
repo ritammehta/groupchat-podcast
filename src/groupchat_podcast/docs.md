@@ -5,13 +5,14 @@ Path: @/src/groupchat_podcast
 ### Overview
 
 - Core Python package for iMessage-to-podcast conversion
-- Four modules: CLI interaction, iMessage extraction, TTS generation, and audio stitching
+- Five modules: CLI interaction, contact resolution, iMessage extraction, TTS generation, and audio stitching
 - Designed as a pipeline: extract messages -> merge consecutive same-sender messages -> preprocess text for TTS -> generate audio per message -> stitch into single MP3
 
 ### How it fits into the larger codebase
 
 - **Invoked by**: CLI entry point (`groupchat-podcast` command) calls `cli.main()`
 - **Reads from**: macOS iMessage database (default `~/Library/Messages/chat.db`, overridable with `--db-path`)
+- **Reads from**: macOS AddressBook databases (`~/Library/Application Support/AddressBook/Sources/*/AddressBook-v22.abcddb`) for contact name resolution; gracefully degrades if unavailable
 - **Calls out to**: ElevenLabs API via the elevenlabs SDK
 - **Writes to**: Local filesystem (MP3 output file)
 - **Dual invocation modes**: Every step in `main()` checks for a CLI flag first and falls back to interactive prompts when the flag is absent
@@ -20,6 +21,8 @@ Path: @/src/groupchat_podcast
 cli.py
    │
    ├──► imessage.py ──► SQLite (chat.db)
+   │
+   ├──► contacts.py ──► SQLite (AddressBook-v22.abcddb)
    │
    ├──► tts.py ──► ElevenLabs API
    │
@@ -34,7 +37,7 @@ cli.py
 
 #### Data Flow
 
-1. **CLI (`cli.py`)**: `build_parser()` defines argparse flags; `main()` checks each flag and falls back to interactive prompts when absent. The entire `main()` body is wrapped in a `try/except KeyboardInterrupt` that exits with code 130
+1. **CLI (`cli.py`)**: `build_parser()` defines argparse flags; `main()` checks each flag and falls back to interactive prompts when absent. After extracting messages, resolves sender handle IDs to contact display names via `contacts.py` before voice assignment. The entire `main()` body is wrapped in a `try/except KeyboardInterrupt` that exits with code 130
 2. **Extraction (`imessage.py`)**: Queries SQLite, converts timestamps, parses attributedBody blobs, reorders threads. `list_group_chats()` now returns chats sorted by most recent message date
 3. **TTS (`tts.py`)**: Preprocesses text (emoji stripping, abbreviation expansion, caps normalization) then converts to MP3 bytes via ElevenLabs. Accepts optional `voice_settings` for tuning voice parameters
 4. **Merging and stitching (`podcast.py`)**: Merges consecutive same-sender messages within a 5-minute window before TTS generation, then concatenates MP3 segments with configurable silence gaps
@@ -60,6 +63,9 @@ cli.py
 | `merge_consecutive_messages()` | podcast.py | Combines consecutive same-sender messages within a time window into single messages |
 | `preprocess_text_for_tts()` | tts.py | Normalizes chat text (emojis, abbreviations, caps, punctuation) for natural TTS output |
 | `stitch_audio()` | podcast.py | Concatenates MP3 files with silence between |
+| `find_contact_dbs()` | contacts.py | Discovers per-account AddressBook source databases under `~/Library/Application Support/AddressBook/Sources/` |
+| `build_contact_lookup()` | contacts.py | Reads AddressBook databases and builds a `Dict[str, str]` mapping normalized phones and lowercased emails to display names |
+| `resolve_participants()` | contacts.py | Maps raw iMessage handle IDs to contact names, falling back to the raw handle if no match |
 
 ### Things to Know
 
@@ -86,6 +92,16 @@ cli.py
 - **Reactions**: Filtered by `associated_message_type = 0` (non-zero values are tapbacks/reactions)
 - **Thread replies**: Messages with `thread_originator_guid` are replies. `_reorder_threads()` moves them to appear immediately after their parent
 - **Last message date**: `list_group_chats()` runs a separate query against `chat_message_join`/`message` to find `MAX(m.date)` per chat. This query is wrapped in `try/except sqlite3.OperationalError` because test databases may lack these tables
+
+#### Contact Resolution
+
+- **Database location**: macOS stores contacts in per-account SQLite databases at `~/Library/Application Support/AddressBook/Sources/*/AddressBook-v22.abcddb`. These are source-specific databases (iCloud, Google, etc.), not the top-level `AddressBook-v22.abcddb`
+- **Schema**: Joins `ZABCDRECORD` (name fields) to `ZABCDPHONENUMBER` and `ZABCDEMAILADDRESS` via the `ZOWNER` foreign key column
+- **Phone normalization**: `normalize_phone()` strips iMessage handle suffixes like `(smsft)` via regex, then removes all non-digit characters. This allows matching `+1 (555) 123-4567` in the Contacts DB against `+15551234567(smsft)` from iMessage
+- **Email matching**: Uses the `ZADDRESSNORMALIZED` column (pre-lowercased by macOS) and compares case-insensitively
+- **Display name fallback**: Prefers `"FirstName LastName"`, falls back to organization name, and finally falls back to the raw handle ID
+- **Display-layer only**: Contact names are used only in CLI prompts (`assign_voices()` display and participant listing). The voice map keys remain raw handle IDs, preserving the data pipeline invariant that `Message.sender` values match voice map keys
+- **Graceful degradation**: All contact resolution in `main()` is wrapped in `try/except Exception`. If the AddressBook is inaccessible (e.g., no permission, non-macOS), `display_names` falls back to an identity mapping and the CLI works exactly as before
 
 #### Audio Generation
 

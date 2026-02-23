@@ -5,7 +5,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import beaupy
 from dotenv import load_dotenv
@@ -14,6 +14,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 
 from groupchat_podcast import __version__
+from groupchat_podcast.contacts import build_contact_lookup, find_contact_dbs, resolve_participants
 from groupchat_podcast.imessage import DEFAULT_DB_PATH, GroupChat, extract_messages, list_group_chats
 from groupchat_podcast.podcast import PodcastGenerator
 from groupchat_podcast.tts import TTSClient
@@ -176,6 +177,7 @@ def get_date_range() -> Tuple[datetime, datetime]:
 def assign_voices(
     participants: List[str],
     tts_client: TTSClient,
+    display_names: Optional[Dict[str, str]] = None,
 ) -> Dict[str, str]:
     """Interactive voice assignment for participants."""
     console.print("\n[bold]Voice Assignment[/bold]")
@@ -186,7 +188,12 @@ def assign_voices(
 
     for participant in participants:
         while True:
-            display_name = participant if participant != "Me" else "You (Me)"
+            if participant == "Me":
+                display_name = "You (Me)"
+            elif display_names and display_names.get(participant, participant) != participant:
+                display_name = f"{display_names[participant]} ({participant})"
+            else:
+                display_name = participant
             voice_input = beaupy.prompt(f"Voice for {display_name}")
             if voice_input is None:
                 raise KeyboardInterrupt
@@ -402,10 +409,19 @@ def main():
 
         # Get unique senders
         senders = sorted(set(m.sender for m in messages if m.sender))
-        console.print(f"Participants: {', '.join(senders)}")
+
+        # Resolve contacts
+        try:
+            contact_dbs = find_contact_dbs()
+            contact_lookup = build_contact_lookup(contact_dbs)
+            display_names = resolve_participants(senders, contact_lookup)
+        except Exception:
+            display_names = {s: s for s in senders}
+
+        console.print(f"Participants: {', '.join(display_names.get(s, s) for s in senders)}")
 
         # Assign voices
-        voice_map = assign_voices(senders, tts_client)
+        voice_map = assign_voices(senders, tts_client, display_names=display_names)
 
         # Get output path
         if args.output is not None:

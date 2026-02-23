@@ -49,3 +49,6 @@ Thumbs.db
 # Project specific
 *.mp3
 output/
+
+# Worktrees
+.worktrees/

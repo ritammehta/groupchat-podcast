@@ -17,16 +17,17 @@ Path: @/
 │                    groupchat-podcast CLI                         │
 └─────────────────────────────────────────────────────────────────┘
                                │
-           ┌───────────────────┼───────────────────┐
-           ▼                   ▼                   ▼
-┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐
-│   iMessage DB   │  │  ElevenLabs API │  │   Local FS      │
-│   (read-only)   │  │   (TTS)         │  │   (MP3 output)  │
-└─────────────────┘  └─────────────────┘  └─────────────────┘
+       ┌───────────┬───────────┼───────────────────┐
+       ▼           ▼           ▼                   ▼
+┌───────────┐ ┌──────────┐ ┌─────────────────┐ ┌─────────────┐
+│ iMessage  │ │ Contacts │ │  ElevenLabs API │ │  Local FS   │
+│ DB (r/o)  │ │ DB (r/o) │ │   (TTS)         │ │ (MP3 output)│
+└───────────┘ └──────────┘ └─────────────────┘ └─────────────┘
 ```
 
 - **Entry point**: `groupchat-podcast` CLI command (defined in `pyproject.toml` as `groupchat_podcast.cli:main`)
 - **Data source**: Reads from macOS iMessage SQLite database (requires Full Disk Access permission)
+- **Contacts resolution**: Optionally reads macOS AddressBook databases to resolve handle IDs to contact names (display-layer only)
 - **External dependency**: ElevenLabs API for text-to-speech conversion
 - **System dependency**: ffmpeg must be installed for audio processing via pydub
 
@@ -34,7 +35,8 @@ Path: @/
 
 | Module | Responsibility |
 |--------|----------------|
-| `cli.py` | Dual-mode interface: argparse flags for scripted use, beaupy interactive prompts as fallback. Handles chat selection (paginated `beaupy.select`), date range, voice assignment, progress display |
+| `cli.py` | Dual-mode interface: argparse flags for scripted use, beaupy interactive prompts as fallback. Handles chat selection (paginated `beaupy.select`), date range, voice assignment, contact resolution, progress display |
+| `contacts.py` | Resolves iMessage handle IDs (phone numbers, emails) to macOS contact names via AddressBook SQLite databases |
 | `imessage.py` | SQLite extraction, timestamp conversion, thread reordering, attachment handling, URL-to-title resolution (makes HTTP requests during extraction) |
 | `tts.py` | ElevenLabs SDK wrapper for TTS generation and voice search; text preprocessing (emoji stripping, abbreviation expansion, caps normalization) for natural chat-to-speech |
 | `podcast.py` | Orchestration: extract -> merge consecutive messages -> preprocess text -> TTS -> stitch; cost estimation |
@@ -54,6 +56,7 @@ Path: @/
 ├── pyproject.toml              # Dependencies, CLI entry point
 ├── src/groupchat_podcast/      # Main package
 │   ├── cli.py                  # Interactive CLI
+│   ├── contacts.py             # macOS Contacts resolution
 │   ├── imessage.py             # Database extraction
 │   ├── tts.py                  # ElevenLabs wrapper
 │   └── podcast.py              # Audio orchestration
