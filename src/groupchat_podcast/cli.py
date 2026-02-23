@@ -17,6 +17,7 @@ from groupchat_podcast import __version__
 from groupchat_podcast.contacts import build_contact_lookup, find_contact_dbs, resolve_participants
 from groupchat_podcast.imessage import DEFAULT_DB_PATH, GroupChat, extract_messages, list_group_chats
 from groupchat_podcast.podcast import PodcastGenerator
+from groupchat_podcast.preflight import run_preflight
 from groupchat_podcast.tts import TTSClient
 
 console = Console()
@@ -62,6 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help="Output file path (default: podcast_YYYYMMDD_HHMMSS.mp3)",
+    )
+    parser.add_argument(
+        "--skip-checks",
+        action="store_true",
+        default=False,
+        help="Skip preflight prerequisite checks",
     )
     return parser
 
@@ -345,18 +352,15 @@ def main():
             )
         )
 
-        # Check for ffmpeg
-        import shutil
-        if not shutil.which("ffmpeg"):
-            console.print(
-                "[red]⚠ ffmpeg not found![/red]\n"
-                "Audio processing requires ffmpeg. Install it with:\n"
-                "  [cyan]brew install ffmpeg[/cyan] (macOS)\n"
-            )
-            result = beaupy.confirm("Continue anyway?", default_is_yes=False)
-            if result is None:
-                raise KeyboardInterrupt
-            if not result:
+        # Resolve database path early (needed for preflight)
+        if args.db_path is not None:
+            db_path = Path(args.db_path).expanduser()
+        else:
+            db_path = DEFAULT_DB_PATH
+
+        # Run preflight prerequisite checks
+        if not args.skip_checks:
+            if not run_preflight(db_path, console=console):
                 sys.exit(1)
 
         # Get API key
@@ -371,12 +375,6 @@ def main():
         except Exception as e:
             console.print(f"[red]Invalid API key: {e}[/red]")
             sys.exit(1)
-
-        # Database path
-        if args.db_path is not None:
-            db_path = Path(args.db_path).expanduser()
-        else:
-            db_path = DEFAULT_DB_PATH
 
         if not db_path.exists():
             console.print(f"[red]iMessage database not found at {db_path}[/red]")

@@ -35,16 +35,16 @@ Path: @/
 
 | Module | Responsibility |
 |--------|----------------|
-| `cli.py` | Dual-mode interface: argparse flags for scripted use, beaupy interactive prompts as fallback. Handles chat selection, date range, voice assignment (search-first), contact resolution, progress display. Top-level error handler catches all exceptions and presents Rich Panel messages instead of Python tracebacks |
+| `cli.py` | Dual-mode interface: argparse flags for scripted use, beaupy interactive prompts as fallback. Calls `run_preflight()` before any interactive prompts to validate prerequisites (bypassed with `--skip-checks`). Handles chat selection, date range, voice assignment (search-first), contact resolution, progress display. Top-level error handler catches all exceptions and presents Rich Panel messages instead of Python tracebacks |
 | `contacts.py` | Resolves iMessage handle IDs (phone numbers, emails) to macOS contact names via AddressBook SQLite databases |
 | `imessage.py` | SQLite extraction, timestamp conversion, thread reordering, attachment handling, URL-to-title resolution (makes HTTP requests during extraction) |
 | `tts.py` | ElevenLabs SDK wrapper for TTS generation and voice search; text preprocessing (emoji stripping, abbreviation expansion, caps normalization) for natural chat-to-speech |
 | `podcast.py` | Orchestration: extract -> merge consecutive messages -> preprocess text -> TTS -> stitch; cost estimation |
-| `preflight.py` | Prerequisite checker: validates macOS platform, ffmpeg installation, Full Disk Access, and ElevenLabs API key. Reports all failures at once via a Rich table with fix instructions |
+| `preflight.py` | Prerequisite checker called automatically from `main()` at startup: validates macOS platform, ffmpeg installation, Full Disk Access, and ElevenLabs API key. Reports all failures at once via a Rich table with fix instructions |
 
 ### Things to Know
 
-- **User-friendly error surface**: The CLI is designed so non-technical users never see a Python traceback. `main()` catches `PermissionError` and generic `Exception` at the top level and renders Rich Panel messages with step-by-step fix instructions. The preflight module (`preflight.py`) aggregates prerequisite failures into a single Rich table so users can fix all issues in one pass
+- **User-friendly error surface**: The CLI is designed so non-technical users never see a Python traceback. `main()` runs preflight checks automatically before any interactive prompts, so users see all prerequisite problems at once. The top-level exception handler catches `PermissionError` and generic `Exception` and renders Rich Panel messages with step-by-step fix instructions. Power users can bypass preflight with `--skip-checks`
 - **Mac timestamps**: iMessage uses nanoseconds since January 1, 2001 (not Unix epoch). See `convert_mac_timestamp()` in `imessage.py`
 - **attributedBody parsing**: Newer macOS versions store message text in binary plist blobs. The parser splits on `NSString` marker, scans for a `+` byte pattern to locate the length and text, and falls back to older single/two-byte length prefix formats
 - **Reaction filtering**: Messages with `associated_message_type != 0` are tapbacks/reactions and are excluded

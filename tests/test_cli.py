@@ -19,8 +19,87 @@ from groupchat_podcast.cli import (
 from groupchat_podcast.imessage import GroupChat
 
 
+class TestPreflightIntegration:
+    """Tests for preflight checks integrated into main()."""
+
+    def test_main_calls_preflight_before_prompts(self, mock_chat_db, mocker, tmp_path):
+        """main() runs preflight checks before any interactive prompts."""
+        call_order = []
+        mocker.patch("sys.argv", [
+            "groupchat-podcast",
+            "--db-path", str(mock_chat_db),
+            "--chat-id", "1",
+            "--start-date", "2024-01-01",
+            "--end-date", "2024-01-31",
+            "-o", str(tmp_path / "out.mp3"),
+        ])
+        mocker.patch("groupchat_podcast.cli.run_preflight",
+                     side_effect=lambda *a, **kw: (call_order.append("preflight"), True)[1])
+        mocker.patch("groupchat_podcast.cli.get_api_key",
+                     side_effect=lambda: (call_order.append("get_api_key"), "test-key")[1])
+        mock_tts = mocker.Mock()
+        mock_tts.search_voices.return_value = []
+        mocker.patch("groupchat_podcast.cli.TTSClient", return_value=mock_tts)
+        mocker.patch("groupchat_podcast.cli.assign_voices", return_value={"_default": "v1"})
+        mocker.patch("groupchat_podcast.cli.show_cost_estimate", return_value=False)
+
+        with pytest.raises(SystemExit):
+            main()
+
+        assert call_order.index("preflight") < call_order.index("get_api_key")
+
+    def test_main_exits_when_preflight_fails(self, mock_chat_db, mocker):
+        """main() exits with code 1 when preflight checks fail, without prompting."""
+        mocker.patch("sys.argv", [
+            "groupchat-podcast",
+            "--db-path", str(mock_chat_db),
+        ])
+        mocker.patch("groupchat_podcast.cli.run_preflight", return_value=False)
+        mock_get_api_key = mocker.patch("groupchat_podcast.cli.get_api_key")
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 1
+        mock_get_api_key.assert_not_called()
+
+    def test_skip_checks_bypasses_preflight(self, mock_chat_db, mocker, tmp_path):
+        """--skip-checks flag causes main() to skip preflight entirely."""
+        mocker.patch("sys.argv", [
+            "groupchat-podcast",
+            "--skip-checks",
+            "--db-path", str(mock_chat_db),
+            "--chat-id", "1",
+            "--start-date", "2024-01-01",
+            "--end-date", "2024-01-31",
+            "-o", str(tmp_path / "out.mp3"),
+        ])
+        mock_preflight = mocker.patch("groupchat_podcast.cli.run_preflight")
+        mocker.patch("groupchat_podcast.cli.get_api_key", return_value="test-key")
+        mock_tts = mocker.Mock()
+        mock_tts.search_voices.return_value = []
+        mocker.patch("groupchat_podcast.cli.TTSClient", return_value=mock_tts)
+        mocker.patch("groupchat_podcast.cli.assign_voices", return_value={"_default": "v1"})
+        mocker.patch("groupchat_podcast.cli.show_cost_estimate", return_value=False)
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 0
+        mock_preflight.assert_not_called()
+
+
 class TestBuildParser:
     """Tests for CLI argument parsing."""
+
+    def test_parses_skip_checks_flag(self):
+        """--skip-checks flag defaults to False, set to True when provided."""
+        parser = build_parser()
+        args_default = parser.parse_args([])
+        assert args_default.skip_checks is False
+
+        args_set = parser.parse_args(["--skip-checks"])
+        assert args_set.skip_checks is True
 
     def test_parses_db_path(self):
         """--db-path flag is parsed correctly."""
@@ -58,8 +137,8 @@ class TestBuildParser:
         args = parser.parse_args(["--output", "my_podcast.mp3"])
         assert args.output == "my_podcast.mp3"
 
-    def test_all_flags_default_to_none(self):
-        """All optional flags default to None when not provided."""
+    def test_all_flags_default_to_none_or_false(self):
+        """All optional flags default to None (or False for booleans) when not provided."""
         parser = build_parser()
         args = parser.parse_args([])
         assert args.db_path is None
@@ -67,6 +146,7 @@ class TestBuildParser:
         assert args.start_date is None
         assert args.end_date is None
         assert args.output is None
+        assert args.skip_checks is False
 
     def test_version_flag_prints_version(self):
         """--version prints the version and exits."""
