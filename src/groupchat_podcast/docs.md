@@ -5,7 +5,7 @@ Path: @/src/groupchat_podcast
 ### Overview
 
 - Core Python package for iMessage-to-podcast conversion
-- Five modules: CLI interaction, contact resolution, iMessage extraction, TTS generation, and audio stitching
+- Modules cover CLI interaction, preflight checks, contact resolution, iMessage extraction, TTS generation, and audio stitching
 - Designed as a pipeline: extract messages -> merge consecutive same-sender messages -> preprocess text for TTS -> generate audio per message -> stitch into single MP3
 
 ### How it fits into the larger codebase
@@ -19,6 +19,8 @@ Path: @/src/groupchat_podcast
 
 ```
 cli.py
+   │
+   ├──► preflight.py ──► Platform, ffmpeg, FDA, API key checks
    │
    ├──► imessage.py ──► SQLite (chat.db)
    │
@@ -37,7 +39,7 @@ cli.py
 
 #### Data Flow
 
-1. **CLI (`cli.py`)**: `build_parser()` defines argparse flags; `main()` checks each flag and falls back to interactive prompts when absent. After extracting messages, resolves sender handle IDs to contact display names via `contacts.py` before voice assignment. The entire `main()` body is wrapped in a `try/except KeyboardInterrupt` that exits with code 130
+1. **CLI (`cli.py`)**: `build_parser()` defines argparse flags; `main()` checks each flag and falls back to interactive prompts when absent. After extracting messages, resolves sender handle IDs to contact display names via `contacts.py` before voice assignment. The entire `main()` body is wrapped in a `try/except` chain: `KeyboardInterrupt` (exit 130), `PermissionError` (Rich Panel with Full Disk Access instructions), and generic `Exception` (Rich Panel with generic error message). Users never see Python tracebacks
 2. **Extraction (`imessage.py`)**: Queries SQLite, converts timestamps, parses attributedBody blobs, reorders threads. `list_group_chats()` now returns chats sorted by most recent message date
 3. **TTS (`tts.py`)**: Preprocesses text (emoji stripping, abbreviation expansion, caps normalization) then converts to MP3 bytes via ElevenLabs. Accepts optional `voice_settings` for tuning voice parameters
 4. **Merging and stitching (`podcast.py`)**: Merges consecutive same-sender messages within a 5-minute window before TTS generation, then concatenates MP3 segments with configurable silence gaps
@@ -51,6 +53,7 @@ cli.py
 | `Voice` | tts.py | Dataclass for ElevenLabs voice metadata |
 | `TTSClient` | tts.py | Wrapper around ElevenLabs SDK with `generate()`, `search_voices()`, `get_voice()` |
 | `PodcastGenerator` | podcast.py | Orchestrates full pipeline with progress callbacks |
+| `CheckResult` | preflight.py | Dataclass for individual preflight check outcome (name, passed, message, fix_instruction) |
 
 #### Key Functions
 
@@ -66,6 +69,9 @@ cli.py
 | `find_contact_dbs()` | contacts.py | Discovers per-account AddressBook source databases under `~/Library/Application Support/AddressBook/Sources/` |
 | `build_contact_lookup()` | contacts.py | Reads AddressBook databases and builds a `Dict[str, str]` mapping normalized phones and lowercased emails to display names |
 | `resolve_participants()` | contacts.py | Maps raw iMessage handle IDs to contact names, falling back to the raw handle if no match |
+| `run_preflight()` | preflight.py | Runs all prerequisite checks (platform, ffmpeg, disk access, API key) and renders a Rich table of failures with fix instructions |
+| `_looks_like_voice_id()` | cli.py | Heuristic that distinguishes voice IDs (20+ alphanumeric chars) from search queries |
+| `_search_and_select_voice()` | cli.py | Searches ElevenLabs voices by query and presents a `beaupy.select` picker of up to 10 results |
 
 ### Things to Know
 
@@ -74,7 +80,7 @@ cli.py
 - `main()` parses CLI args first via `build_parser().parse_args()`. For each step (db path, chat selection, date range, output path), it checks whether a flag was provided (`args.X is not None`) and only falls to the interactive prompt when the flag is absent
 - `--db-path` uses `Path.expanduser()` so `~` paths work. Error messages differ depending on whether the path was user-provided or the default
 - `--start-date` and `--end-date` must both be provided together; if either is absent, the interactive `get_date_range()` prompt is used instead
-- `KeyboardInterrupt` is caught at the top level of `main()`, producing a clean exit with code 130 (Unix SIGINT convention)
+- `main()` has a three-tier exception handler: `KeyboardInterrupt` exits with code 130 (Unix SIGINT convention), `PermissionError` renders a Rich Panel with Full Disk Access fix instructions (exit 1), and a catch-all `Exception` handler renders a generic Rich Panel error (exit 1). This ensures no Python tracebacks are ever shown to the user
 
 #### beaupy Interactive Prompts
 
@@ -84,6 +90,19 @@ cli.py
 - `get_api_key()` uses `beaupy.prompt(secure=True)` for masked password input
 - `get_date_range()` and `get_output_path()` use `beaupy.prompt(initial_value=...)` to pre-fill editable defaults (replaces `Prompt.ask(default=...)`)
 - `show_cost_estimate()` and the ffmpeg check in `main()` use `beaupy.confirm(default_is_yes=...)` for yes/no confirmation
+
+#### Voice Assignment (Search-First Flow)
+
+- `assign_voices()` treats user input as a **search query by default**. Only if the input looks like a voice ID (20+ alphanumeric characters, detected by `_looks_like_voice_id()`) does it try a direct ID lookup first
+- When a direct ID lookup fails (the input matched the ID heuristic but was not a valid ID), it falls through to search instead of erroring
+- Search results are presented as a `beaupy.select` picker (up to 10 results) via `_search_and_select_voice()`, with each voice showing its name and labels
+- Empty input is rejected with a prompt to enter a voice name or ID
+
+#### Preflight Checks
+
+- `preflight.py` defines four independent checks: `check_platform()` (macOS only), `check_ffmpeg()` (PATH + Homebrew fallback paths `/opt/homebrew/bin/ffmpeg` and `/usr/local/bin/ffmpeg`), `check_disk_access()` (probes the chat.db file with a 1-byte read), and `check_api_key()` (checks `ELEVENLABS_API_KEY` env var after `load_dotenv()`)
+- `run_preflight()` runs all checks and aggregates results. If any check fails, it renders a Rich table showing every check's status and fix instructions for failures, then returns `False`
+- Fix instructions are tailored to the user's environment -- e.g., ffmpeg instructions differ based on whether Homebrew is already installed
 
 #### iMessage Database Quirks
 

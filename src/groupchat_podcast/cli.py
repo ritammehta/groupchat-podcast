@@ -174,6 +174,35 @@ def get_date_range() -> Tuple[datetime, datetime]:
     return start_date, end_date
 
 
+def _looks_like_voice_id(text: str) -> bool:
+    """Heuristic: ElevenLabs voice IDs are 20+ alphanumeric characters."""
+    stripped = text.strip()
+    return len(stripped) >= 20 and stripped.isalnum()
+
+
+def _search_and_select_voice(tts_client: TTSClient, query: str):
+    """Search for voices and let user pick one. Returns Voice or None."""
+    try:
+        voices = tts_client.search_voices(query)
+    except Exception as e:
+        console.print(f"    [red]Error searching voices: {e}[/red]")
+        return None
+
+    if not voices:
+        console.print("    [yellow]No voices found. Try a different search.[/yellow]")
+        return None
+
+    selected = beaupy.select(
+        voices[:10],
+        preprocessor=lambda v: f"{v.name} ({', '.join(f'{k}: {val}' for k, val in v.labels.items()) if v.labels else 'no labels'})",
+        cursor_style="cyan",
+    )
+    if selected is None:
+        raise KeyboardInterrupt
+
+    return selected
+
+
 def assign_voices(
     participants: List[str],
     tts_client: TTSClient,
@@ -181,8 +210,7 @@ def assign_voices(
 ) -> Dict[str, str]:
     """Interactive voice assignment for participants."""
     console.print("\n[bold]Voice Assignment[/bold]")
-    console.print("Assign an ElevenLabs voice ID to each participant.")
-    console.print("Enter 'list' to search for voices, or paste a voice ID directly.\n")
+    console.print("Search for a voice by name, or paste a voice ID directly.\n")
 
     voice_map: Dict[str, str] = {}
 
@@ -198,41 +226,28 @@ def assign_voices(
             if voice_input is None:
                 raise KeyboardInterrupt
 
-            if voice_input.lower() == "list":
-                # Search for voices
-                query = beaupy.prompt("Search voices")
-                if query is None:
-                    raise KeyboardInterrupt
-                try:
-                    voices = tts_client.search_voices(query)
-                    if not voices:
-                        console.print("    [yellow]No voices found.[/yellow]")
-                        continue
-
-                    console.print()
-                    for v in voices[:10]:  # Show max 10
-                        labels_str = ", ".join(f"{k}: {v}" for k, v in v.labels.items()) if v.labels else ""
-                        console.print(f"    [green]{v.name}[/green] - {labels_str}")
-                        console.print(f"      ID: [dim]{v.voice_id}[/dim]")
-                    console.print()
-                except Exception as e:
-                    console.print(f"    [red]Error searching voices: {e}[/red]")
+            if not voice_input.strip():
+                console.print("    [red]Please enter a voice name to search, or a voice ID.[/red]")
                 continue
 
-            if voice_input.strip():
-                # Validate voice ID
+            if _looks_like_voice_id(voice_input):
+                # Looks like a voice ID — try it directly
                 try:
                     voice = tts_client.get_voice(voice_input.strip())
-                    console.print(f"    [green]✓ Using voice: {voice.name}[/green]")
+                    console.print(f"    [green]Using voice: {voice.name}[/green]")
                     voice_map[participant] = voice_input.strip()
                     break
                 except Exception:
                     console.print(
-                        f"    [red]Could not find voice with ID: {voice_input}[/red]"
+                        f"    [dim]Not a voice ID, searching for \"{voice_input}\"...[/dim]"
                     )
-                    console.print("    [yellow]Enter 'list' to search for voices.[/yellow]")
-            else:
-                console.print("    [red]Please enter a voice ID.[/red]")
+
+            # Treat as search query
+            selected = _search_and_select_voice(tts_client, voice_input.strip())
+            if selected is not None:
+                console.print(f"    [green]Using voice: {selected.name}[/green]")
+                voice_map[participant] = selected.voice_id
+                break
 
     return voice_map
 
@@ -400,7 +415,10 @@ def main():
         messages = extract_messages(db_path, chat_id, start_date, end_date)
 
         if not messages:
-            console.print("[yellow]No messages found in that date range.[/yellow]")
+            console.print(
+                "[yellow]No messages found in that date range.[/yellow]\n"
+                "[dim]Try a wider date range, or check that you selected the right group chat.[/dim]"
+            )
             sys.exit(0)
 
         # Count messages with actual text content
@@ -453,6 +471,34 @@ def main():
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted. Exiting.[/yellow]")
         sys.exit(130)
+    except PermissionError as e:
+        if "Operation not permitted" in str(e):
+            console.print(Panel(
+                "[bold red]Cannot access iMessage database[/bold red]\n\n"
+                "macOS is blocking this app from reading your messages.\n\n"
+                "[bold green]How to fix:[/bold green]\n"
+                "1. Open System Settings (Apple menu > System Settings)\n"
+                "2. Go to Privacy & Security > Full Disk Access\n"
+                "3. Toggle ON the switch for your terminal app\n"
+                "4. Restart your terminal and try again",
+                title="[red]Permission Error[/red]",
+                border_style="red",
+            ))
+        else:
+            console.print(Panel(
+                f"[bold red]Permission denied[/bold red]\n\n{e}",
+                title="[red]Error[/red]",
+                border_style="red",
+            ))
+        sys.exit(1)
+    except Exception as e:
+        console.print(Panel(
+            f"[bold red]Something went wrong[/bold red]\n\n{e}\n\n"
+            "[dim]If this keeps happening, please report the issue.[/dim]",
+            title="[red]Error[/red]",
+            border_style="red",
+        ))
+        sys.exit(1)
 
 
 if __name__ == "__main__":

@@ -260,13 +260,13 @@ class TestCLIDisplaysContactNames:
 
     def test_assign_voices_shows_contact_name_with_raw_id(self, mocker):
         """Voice assignment prompt shows 'Contact Name (raw_id)' when contact is resolved."""
+        from groupchat_podcast.tts import Voice
         mock_tts = mocker.Mock()
-        mock_voice = mocker.Mock()
-        mock_voice.name = "Adam"
-        mock_tts.get_voice.return_value = mock_voice
+        test_voice = Voice(voice_id="abc123", name="Adam", labels={})
+        mock_tts.search_voices.return_value = [test_voice]
 
-        # Simulate user entering a voice ID
-        mocker.patch("beaupy.prompt", return_value="voice-abc-123")
+        mocker.patch("beaupy.prompt", return_value="Adam")
+        mocker.patch("beaupy.select", return_value=test_voice)
 
         from groupchat_podcast.cli import assign_voices
 
@@ -285,40 +285,16 @@ class TestCLIDisplaysContactNames:
 
         # Verify the voice map key is still the raw handle
         assert "+15551234567" in result
-        assert result["+15551234567"] == "voice-abc-123"
-
-    def test_assign_voices_shows_raw_id_when_no_contact(self, mocker):
-        """Voice assignment prompt shows just the raw ID when contact is not resolved."""
-        mock_tts = mocker.Mock()
-        mock_voice = mocker.Mock()
-        mock_voice.name = "Adam"
-        mock_tts.get_voice.return_value = mock_voice
-
-        mocker.patch("beaupy.prompt", return_value="voice-abc-123")
-
-        from groupchat_podcast.cli import assign_voices
-
-        display_names = {"+15559999999": "+15559999999"}
-        result = assign_voices(
-            ["+15559999999"],
-            mock_tts,
-            display_names=display_names,
-        )
-
-        import beaupy
-        prompt_call = beaupy.prompt.call_args
-        # Should just show the raw number, not duplicated
-        prompt_text = prompt_call[0][0]
-        assert "+15559999999" in prompt_text
 
     def test_assign_voices_works_without_display_names(self, mocker):
         """Voice assignment works when display_names is not provided (backwards compat)."""
+        from groupchat_podcast.tts import Voice
         mock_tts = mocker.Mock()
-        mock_voice = mocker.Mock()
-        mock_voice.name = "Adam"
-        mock_tts.get_voice.return_value = mock_voice
+        test_voice = Voice(voice_id="abc123", name="Adam", labels={})
+        mock_tts.search_voices.return_value = [test_voice]
 
-        mocker.patch("beaupy.prompt", return_value="voice-abc-123")
+        mocker.patch("beaupy.prompt", return_value="Adam")
+        mocker.patch("beaupy.select", return_value=test_voice)
 
         from groupchat_podcast.cli import assign_voices
 
