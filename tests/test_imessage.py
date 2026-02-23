@@ -45,6 +45,23 @@ class TestMacTimestampConversion:
         assert result == expected
 
 
+def _make_typedstream_blob(text_bytes: bytes) -> bytes:
+    """Build a synthetic typedstream blob matching iMessage's attributedBody format.
+
+    Format: streamtyped preamble + NSString + \x01\x94\x84\x01\x2b + length + text + \x86
+    Length encoding: 0-127 = single byte, 128+ = \x81 + 2-byte LE uint16.
+    """
+    preamble = b"streamtyped\x00"
+    ns_string = b"NSString"
+    marker = b"\x01\x94\x84\x01\x2b"  # ends with + (0x2b)
+    length = len(text_bytes)
+    if length < 128:
+        length_field = bytes([length])
+    else:
+        length_field = b"\x81" + length.to_bytes(2, "little")
+    return preamble + ns_string + marker + length_field + text_bytes + b"\x86"
+
+
 class TestParseAttributedBody:
     """Tests for parsing attributedBody blob."""
 
@@ -60,15 +77,68 @@ class TestParseAttributedBody:
 
     def test_extracts_text_from_attributed_body(self):
         """Extract text from attributedBody blob format."""
-        # Build a blob that matches the NSString format the parser expects
-        # Format: ...NSString<length_byte><text>...
         text = b"Hello"
-        # The parser looks for NSString marker, then reads length byte + text
-        blob = b"streamtyped\x00NSString" + bytes([len(text)]) + text
+        blob = _make_typedstream_blob(text)
 
         result = parse_attributed_body(blob)
 
         assert result == "Hello"
+
+    def test_parses_exactly_127_chars(self):
+        """127 chars is the max single-byte length — boundary value."""
+        text = "A" * 127
+        blob = _make_typedstream_blob(text.encode("utf-8"))
+
+        result = parse_attributed_body(blob)
+
+        assert result == text
+        assert len(result) == 127
+
+    def test_parses_128_chars(self):
+        """128 chars requires multi-byte (0x81) length encoding."""
+        text = "B" * 128
+        blob = _make_typedstream_blob(text.encode("utf-8"))
+
+        result = parse_attributed_body(blob)
+
+        assert result == text
+        assert len(result) == 128
+
+    def test_parses_200_chars(self):
+        """Typical medium message with 0x81 encoding."""
+        text = "C" * 200
+        blob = _make_typedstream_blob(text.encode("utf-8"))
+
+        result = parse_attributed_body(blob)
+
+        assert result == text
+        assert len(result) == 200
+
+    def test_parses_500_chars(self):
+        """Longer message, still 0x81 encoding (max 65535)."""
+        text = "D" * 500
+        blob = _make_typedstream_blob(text.encode("utf-8"))
+
+        result = parse_attributed_body(blob)
+
+        assert result == text
+        assert len(result) == 500
+
+    def test_parses_multibyte_utf8_over_127_chars(self):
+        """Multi-byte UTF-8: byte length > 127 even if char count is smaller.
+
+        The typedstream length field is the byte length, not the character count.
+        """
+        # 50 emoji (each 4 bytes) = 200 bytes, but only 50 characters
+        text = "\U0001f600" * 50
+        text_bytes = text.encode("utf-8")
+        assert len(text_bytes) == 200  # sanity: byte length > 127
+        blob = _make_typedstream_blob(text_bytes)
+
+        result = parse_attributed_body(blob)
+
+        assert result == text
+        assert len(result) == 50
 
 
 class TestListGroupChats:
