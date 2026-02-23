@@ -361,6 +361,106 @@ class TestGetOutputPath:
             get_output_path()
 
 
+class TestFriendlyErrors:
+    """Tests for user-friendly error handling in main()."""
+
+    def test_permission_error_shows_friendly_message(self, mock_chat_db, mocker, capsys):
+        """PermissionError during message extraction shows friendly panel, not traceback."""
+        mocker.patch("sys.argv", [
+            "groupchat-podcast",
+            "--db-path", str(mock_chat_db),
+            "--chat-id", "1",
+            "--start-date", "2024-01-01",
+            "--end-date", "2024-01-31",
+            "-o", "/tmp/out.mp3",
+        ])
+        mocker.patch("groupchat_podcast.cli.get_api_key", return_value="test-key")
+        mock_tts = mocker.Mock()
+        mock_tts.search_voices.return_value = []
+        mocker.patch("groupchat_podcast.cli.TTSClient", return_value=mock_tts)
+        mocker.patch("groupchat_podcast.cli.extract_messages",
+                     side_effect=PermissionError("Operation not permitted"))
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "Traceback" not in captured.err
+
+    def test_generic_exception_shows_friendly_message(self, mock_chat_db, mocker, capsys):
+        """Unhandled exceptions show a friendly error, not a raw traceback."""
+        mocker.patch("sys.argv", [
+            "groupchat-podcast",
+            "--db-path", str(mock_chat_db),
+            "--chat-id", "1",
+            "--start-date", "2024-01-01",
+            "--end-date", "2024-01-31",
+            "-o", "/tmp/out.mp3",
+        ])
+        mocker.patch("groupchat_podcast.cli.get_api_key", return_value="test-key")
+        mock_tts = mocker.Mock()
+        mock_tts.search_voices.return_value = []
+        mocker.patch("groupchat_podcast.cli.TTSClient", return_value=mock_tts)
+        mocker.patch("groupchat_podcast.cli.extract_messages",
+                     side_effect=RuntimeError("Something broke"))
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 1
+        captured = capsys.readouterr()
+        assert "Traceback" not in captured.err
+
+
+class TestNoMessagesUX:
+    """Tests for improved UX when no messages are found."""
+
+    def test_no_messages_suggests_wider_date_range(self, mock_chat_db, mocker, capsys):
+        """When no messages found, output suggests trying a different date range."""
+        mocker.patch("sys.argv", [
+            "groupchat-podcast",
+            "--db-path", str(mock_chat_db),
+            "--chat-id", "1",
+            "--start-date", "2025-01-01",
+            "--end-date", "2025-01-31",
+            "-o", "/tmp/out.mp3",
+        ])
+        mocker.patch("groupchat_podcast.cli.get_api_key", return_value="test-key")
+        mock_tts = mocker.Mock()
+        mock_tts.search_voices.return_value = []
+        mocker.patch("groupchat_podcast.cli.TTSClient", return_value=mock_tts)
+
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        # Should suggest trying a different/wider date range
+        assert "try" in captured.out.lower() or "different" in captured.out.lower() or "wider" in captured.out.lower()
+
+
+class TestVoiceAssignment:
+    """Tests for improved voice assignment flow."""
+
+    def test_search_first_flow_treats_text_as_search(self, mocker):
+        """When user enters non-ID text, assign_voices treats it as a search query."""
+        from groupchat_podcast.cli import assign_voices
+        from groupchat_podcast.tts import Voice
+
+        mock_tts = mocker.Mock()
+        test_voice = Voice(voice_id="abc123def456", name="Rachel", labels={"accent": "american"})
+        mock_tts.search_voices.return_value = [test_voice]
+
+        mocker.patch("beaupy.prompt", side_effect=["Rachel"])
+        mocker.patch("beaupy.select", return_value=test_voice)
+
+        result = assign_voices(["+15551234567"], mock_tts)
+
+        assert result["+15551234567"] == "abc123def456"
+        mock_tts.search_voices.assert_called()
+
+
 class TestShowCostEstimate:
     """Tests for cost estimate confirmation via beaupy."""
 
