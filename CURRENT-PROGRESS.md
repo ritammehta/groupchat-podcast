@@ -16,11 +16,13 @@
 12. **Friendly error handling** — Top-level exception handler in main() catches PermissionError and generic exceptions, showing Rich Panel messages instead of Python tracebacks. Users never see stack traces.
 13. **Search-first voice assignment** — Voice prompt treats input as a search query by default, presenting results in a beaupy.select picker. Only tries as voice ID if input is 20+ alphanumeric characters.
 14. **Improved "no messages" UX** — When no messages found in date range, suggests trying a wider range.
+15. **Timezone-correct timestamp handling** — Mac timestamps (UTC) are now properly converted to/from local time. Date range queries use local time as intended, and displayed timestamps are local. Previously, the UTC offset was ignored, causing messages to be missed or incorrectly included near timezone boundaries.
 
 ## Test Coverage
 
-- 135 passing tests across cli, contacts, imessage, podcast, tts, preflight modules
+- 139 passing tests across cli, contacts, imessage, podcast, tts, preflight modules
 - Mock chat.db fixture with representative data
+- Timezone-specific tests verify UTC↔local conversion round-trips correctly
 
 ## What's Next
 

@@ -45,7 +45,7 @@ Path: @/
 ### Things to Know
 
 - **User-friendly error surface**: The CLI is designed so non-technical users never see a Python traceback. `main()` runs preflight checks automatically before any interactive prompts, so users see all prerequisite problems at once. The top-level exception handler catches `PermissionError` and generic `Exception` and renders Rich Panel messages with step-by-step fix instructions. Power users can bypass preflight with `--skip-checks`
-- **Mac timestamps**: iMessage uses nanoseconds since January 1, 2001 (not Unix epoch). See `convert_mac_timestamp()` in `imessage.py`
+- **Mac timestamps**: iMessage stores timestamps as nanoseconds since January 1, 2001 **in UTC** (not Unix epoch). The conversion layer in `imessage.py` translates between UTC Mac timestamps and naive local datetimes: `convert_mac_timestamp()` returns local time, and `datetime_to_mac_timestamp()` treats naive inputs as local time and converts to UTC before computing the Mac timestamp
 - **attributedBody parsing**: Newer macOS versions store message text in binary plist blobs. The parser splits on `NSString` marker, scans for a `+` byte pattern to locate the length and text, and falls back to older single/two-byte length prefix formats
 - **Reaction filtering**: Messages with `associated_message_type != 0` are tapbacks/reactions and are excluded
 - **Thread reordering**: Reply messages (those with `thread_originator_guid`) are repositioned to appear immediately after their parent message

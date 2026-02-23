@@ -6,12 +6,12 @@ import sqlite3
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-# Mac epoch: January 1, 2001
-MAC_EPOCH = datetime(2001, 1, 1)
+# Mac epoch: January 1, 2001 UTC
+MAC_EPOCH_UTC = datetime(2001, 1, 1, tzinfo=timezone.utc)
 
 # Default database path
 DEFAULT_DB_PATH = Path.home() / "Library" / "Messages" / "chat.db"
@@ -42,16 +42,23 @@ class Message:
 
 
 def convert_mac_timestamp(mac_timestamp: int) -> datetime:
-    """Convert Mac nanosecond timestamp to Python datetime."""
+    """Convert Mac nanosecond timestamp (UTC) to local datetime."""
     if mac_timestamp == 0:
-        return MAC_EPOCH
+        return MAC_EPOCH_UTC.astimezone().replace(tzinfo=None)
     seconds = mac_timestamp / 1_000_000_000
-    return MAC_EPOCH + timedelta(seconds=seconds)
+    utc_dt = MAC_EPOCH_UTC + timedelta(seconds=seconds)
+    return utc_dt.astimezone().replace(tzinfo=None)
 
 
 def datetime_to_mac_timestamp(dt: datetime) -> int:
-    """Convert Python datetime to Mac nanosecond timestamp."""
-    delta = dt - MAC_EPOCH
+    """Convert local datetime to Mac nanosecond timestamp (UTC).
+
+    Treats naive datetimes as local time.
+    """
+    if dt.tzinfo is None:
+        dt = dt.astimezone()
+    utc_dt = dt.astimezone(timezone.utc)
+    delta = utc_dt - MAC_EPOCH_UTC
     return int(delta.total_seconds() * 1_000_000_000)
 
 
@@ -235,11 +242,11 @@ def list_group_chats(db_path: Path) -> List[GroupChat]:
         chat_id, display_name, participants_str, participant_count = row
         participants = participants_str.split("; ") if participants_str else []
 
-        # Convert Mac timestamp to datetime
+        # Convert Mac timestamp to local datetime
         last_message_dt = None
         last_msg_date = last_msg_dates.get(chat_id)
         if last_msg_date:
-            last_message_dt = MAC_EPOCH + timedelta(seconds=last_msg_date / 1e9)
+            last_message_dt = convert_mac_timestamp(last_msg_date)
 
         chats.append(
             GroupChat(

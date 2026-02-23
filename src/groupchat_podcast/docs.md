@@ -107,7 +107,7 @@ cli.py
 
 #### iMessage Database Quirks
 
-- **Timestamp format**: Nanoseconds since January 1, 2001 (`MAC_EPOCH`). Use `convert_mac_timestamp()` and `datetime_to_mac_timestamp()` for conversion
+- **Timestamp format and timezone invariant**: iMessage stores timestamps as nanoseconds since January 1, 2001 **in UTC**. The epoch is defined as `MAC_EPOCH_UTC` (timezone-aware). The conversion functions enforce a strict boundary: all Mac timestamps are UTC, all user-facing datetimes are naive local time. `convert_mac_timestamp()` converts a UTC Mac timestamp to a naive local datetime (via `.astimezone().replace(tzinfo=None)`). `datetime_to_mac_timestamp()` treats naive datetime inputs as local time, converts to UTC, then computes the Mac timestamp. This means `extract_messages()` date-range parameters and `Message.timestamp` values are all in local time, while the underlying SQLite queries use UTC Mac timestamps. `list_group_chats()` uses `convert_mac_timestamp()` for its `last_message_date` field rather than manual arithmetic, ensuring consistent timezone handling
 - **attributedBody**: Modern macOS stores message text in binary plist format. The parser splits on `NSString` marker. The primary strategy scans for a `+` byte and reads the next byte as a length to extract text. If that fails, it falls back to older formats: 0x81 prefix for two-byte length, or a single byte < 128 for one-byte length
 - **Reactions**: Filtered by `associated_message_type = 0` (non-zero values are tapbacks/reactions)
 - **Thread replies**: Messages with `thread_originator_guid` are replies. `_reorder_threads()` moves them to appear immediately after their parent

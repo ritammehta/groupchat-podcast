@@ -1,6 +1,7 @@
 """Tests for iMessage database extraction."""
 
-from datetime import datetime
+import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -8,38 +9,40 @@ from groupchat_podcast.imessage import (
     GroupChat,
     Message,
     convert_mac_timestamp,
+    datetime_to_mac_timestamp,
     extract_messages,
     list_group_chats,
     parse_attributed_body,
 )
+
+# Mac epoch in UTC — this is the ground truth for iMessage timestamps
+MAC_EPOCH_UTC = datetime(2001, 1, 1, tzinfo=timezone.utc)
 
 
 class TestMacTimestampConversion:
     """Tests for Mac timestamp conversion."""
 
     def test_converts_known_timestamp(self):
-        """Convert a known Mac timestamp to datetime."""
-        # Calculate the correct value:
-        # From 2001-01-01 to 2024-01-15 10:00:00
-        from datetime import datetime
-        target = datetime(2024, 1, 15, 10, 0, 0)
-        mac_epoch = datetime(2001, 1, 1)
-        delta = target - mac_epoch
-        mac_ts = int(delta.total_seconds() * 1_000_000_000)
+        """Convert a known UTC Mac timestamp to local datetime."""
+        # Mac timestamp for 2024-01-15 15:00:00 UTC
+        target_utc = datetime(2024, 1, 15, 15, 0, 0, tzinfo=timezone.utc)
+        expected_local = target_utc.astimezone().replace(tzinfo=None)
+        mac_ts = _utc_to_mac_nanos(target_utc)
 
         result = convert_mac_timestamp(mac_ts)
 
-        assert result.year == 2024
-        assert result.month == 1
-        assert result.day == 15
-        assert result.hour == 10
-        assert result.minute == 0
+        assert result.year == expected_local.year
+        assert result.month == expected_local.month
+        assert result.day == expected_local.day
+        assert result.hour == expected_local.hour
+        assert result.minute == expected_local.minute
 
     def test_handles_zero_timestamp(self):
-        """Zero timestamp should return Mac epoch (2001-01-01)."""
+        """Zero timestamp should return Mac epoch (2001-01-01) in local time."""
+        expected = datetime(2001, 1, 1, tzinfo=timezone.utc).astimezone().replace(tzinfo=None)
         result = convert_mac_timestamp(0)
 
-        assert result == datetime(2001, 1, 1, 0, 0, 0)
+        assert result == expected
 
 
 class TestParseAttributedBody:
@@ -265,3 +268,130 @@ class TestExtractMessages:
 
         texts = [m.text for m in messages]
         assert "lol" in texts
+
+
+def _utc_to_mac_nanos(dt_utc: datetime) -> int:
+    """Convert a UTC datetime to Mac nanosecond timestamp (ground truth)."""
+    delta = dt_utc - MAC_EPOCH_UTC
+    return int(delta.total_seconds() * 1_000_000_000)
+
+
+def _make_utc_chat_db(tmp_path, messages_utc):
+    """Create a mock chat.db with messages at known UTC timestamps.
+
+    messages_utc: list of (guid, text, utc_datetime) tuples
+    """
+    db_path = tmp_path / "tz_chat.db"
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.executescript("""
+        CREATE TABLE handle (ROWID INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT, service TEXT);
+        CREATE TABLE chat (ROWID INTEGER PRIMARY KEY AUTOINCREMENT, guid TEXT UNIQUE NOT NULL,
+            chat_identifier TEXT, display_name TEXT, room_name TEXT);
+        CREATE TABLE message (ROWID INTEGER PRIMARY KEY AUTOINCREMENT, guid TEXT UNIQUE NOT NULL,
+            text TEXT, attributedBody BLOB, handle_id INTEGER, date INTEGER, is_from_me INTEGER DEFAULT 0,
+            cache_has_attachments INTEGER DEFAULT 0, associated_message_type INTEGER DEFAULT 0,
+            associated_message_guid TEXT, thread_originator_guid TEXT);
+        CREATE TABLE chat_handle_join (chat_id INTEGER, handle_id INTEGER);
+        CREATE TABLE chat_message_join (chat_id INTEGER, message_id INTEGER);
+        CREATE TABLE attachment (ROWID INTEGER PRIMARY KEY AUTOINCREMENT, guid TEXT,
+            filename TEXT, mime_type TEXT, transfer_name TEXT);
+        CREATE TABLE message_attachment_join (message_id INTEGER, attachment_id INTEGER);
+    """)
+    cur.execute("INSERT INTO handle (id, service) VALUES (?, ?)", ("+15550001111", "iMessage"))
+    cur.execute("INSERT INTO chat (guid, chat_identifier, display_name) VALUES (?, ?, ?)",
+                ("tz_chat", "tz_chat", "TZ Test Chat"))
+    cur.execute("INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (1, 1)")
+
+    for i, (guid, text, utc_dt) in enumerate(messages_utc, start=1):
+        mac_ts = _utc_to_mac_nanos(utc_dt)
+        cur.execute(
+            "INSERT INTO message (guid, text, handle_id, date, associated_message_type) VALUES (?, ?, 1, ?, 0)",
+            (guid, text, mac_ts),
+        )
+        cur.execute("INSERT INTO chat_message_join (chat_id, message_id) VALUES (1, ?)", (i,))
+
+    conn.commit()
+    conn.close()
+    return db_path
+
+
+class TestTimezoneHandling:
+    """Tests that local-time date ranges correctly query UTC-stored Mac timestamps."""
+
+    def test_local_date_range_includes_messages_stored_as_utc(self, tmp_path):
+        """A message at 2024-01-15 15:00 UTC should be found when querying
+        with local time that corresponds to that UTC time.
+
+        For example, in UTC-5, 15:00 UTC = 10:00 local. A query for
+        local 09:00-11:00 should include it.
+        """
+        # Store a message at a known UTC time
+        msg_utc = datetime(2024, 1, 15, 15, 0, 0, tzinfo=timezone.utc)
+        db_path = _make_utc_chat_db(tmp_path, [
+            ("msg_tz1", "timezone test message", msg_utc),
+        ])
+
+        # Query using the LOCAL time equivalent
+        # msg_utc in local time:
+        msg_local = msg_utc.astimezone().replace(tzinfo=None)
+        start_local = msg_local - timedelta(hours=1)
+        end_local = msg_local + timedelta(hours=1)
+
+        messages = extract_messages(db_path, chat_id=1, start_date=start_local, end_date=end_local)
+
+        assert len(messages) == 1
+        assert messages[0].text == "timezone test message"
+
+    def test_message_timestamp_is_local_time(self, tmp_path):
+        """convert_mac_timestamp should return local time, not UTC."""
+        msg_utc = datetime(2024, 7, 4, 20, 0, 0, tzinfo=timezone.utc)
+        expected_local = msg_utc.astimezone().replace(tzinfo=None)
+
+        mac_ts = _utc_to_mac_nanos(msg_utc)
+        result = convert_mac_timestamp(mac_ts)
+
+        assert result.hour == expected_local.hour
+        assert result.day == expected_local.day
+
+    def test_datetime_to_mac_timestamp_accounts_for_utc_offset(self):
+        """datetime_to_mac_timestamp should treat input as local time and
+        produce the correct UTC-based Mac timestamp.
+
+        Local midnight != UTC midnight (unless you're in UTC).
+        """
+        local_midnight = datetime(2024, 1, 15, 0, 0, 0)
+
+        # What UTC time does local midnight correspond to?
+        local_aware = local_midnight.astimezone()
+        utc_equivalent = local_aware.astimezone(timezone.utc)
+        expected_mac_ts = _utc_to_mac_nanos(utc_equivalent)
+
+        actual_mac_ts = datetime_to_mac_timestamp(local_midnight)
+
+        assert actual_mac_ts == expected_mac_ts
+
+    def test_cross_midnight_utc_messages_not_lost(self, tmp_path):
+        """Messages near midnight UTC should not be dropped when the local
+        timezone causes the UTC boundary to fall inside the query range.
+
+        Scenario: user in UTC-5 queries 2024-01-15 22:00 to 2024-01-16 02:00 local.
+        That's 2024-01-16 03:00 to 07:00 UTC. A message at 05:00 UTC (midnight local)
+        should be included.
+        """
+        # Message at 2024-01-16 05:00 UTC (= midnight local in UTC-5)
+        msg_utc = datetime(2024, 1, 16, 5, 0, 0, tzinfo=timezone.utc)
+        msg_local = msg_utc.astimezone().replace(tzinfo=None)
+
+        db_path = _make_utc_chat_db(tmp_path, [
+            ("msg_midnight", "midnight message", msg_utc),
+        ])
+
+        # Query: 2 hours before to 2 hours after in local time
+        start_local = msg_local - timedelta(hours=2)
+        end_local = msg_local + timedelta(hours=2)
+
+        messages = extract_messages(db_path, chat_id=1, start_date=start_local, end_date=end_local)
+
+        assert len(messages) == 1
+        assert messages[0].text == "midnight message"
