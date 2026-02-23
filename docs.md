@@ -35,7 +35,7 @@ Path: @/
 | Module | Responsibility |
 |--------|----------------|
 | `cli.py` | Dual-mode interface: argparse flags for scripted use, beaupy interactive prompts as fallback. Handles chat selection (paginated `beaupy.select`), date range, voice assignment, progress display |
-| `imessage.py` | SQLite extraction, timestamp conversion, thread reordering, attachment handling |
+| `imessage.py` | SQLite extraction, timestamp conversion, thread reordering, attachment handling, URL-to-title resolution (makes HTTP requests during extraction) |
 | `tts.py` | ElevenLabs SDK wrapper for TTS generation and voice search |
 | `podcast.py` | Orchestration: extract -> TTS -> stitch; cost estimation |
 
