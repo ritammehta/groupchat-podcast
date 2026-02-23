@@ -14,12 +14,6 @@ Turn any iMessage group chat into a podcast. Each person in the chat gets their 
 Open the Terminal app on your Mac and run:
 
 ```bash
-pip install groupchat-podcast
-```
-
-Or, if you downloaded the source code:
-
-```bash
 git clone https://github.com/ritammehta/groupchat-podcast.git
 cd groupchat-podcast
 pip install .
