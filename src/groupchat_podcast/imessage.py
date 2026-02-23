@@ -66,48 +66,46 @@ def parse_attributed_body(blob: Optional[bytes]) -> str:
     """Parse attributedBody blob to extract text.
 
     The attributedBody is a binary plist containing NSAttributedString data.
-    The text content follows the 'NSString' marker in the blob.
+    The text content follows the 'NSString' marker in the blob, using Apple's
+    typedstream variable-width integer encoding for the length field.
     """
     if not blob:
         return ""
 
     try:
-        # Find NSString marker and extract text
         parts = blob.split(b"NSString")
         if len(parts) <= 1:
             return ""
 
         content = parts[1]
-        if len(content) < 5:
+
+        # Find the + marker (0x2B) that precedes the length field
+        plus_pos = content.find(b"\x2b")
+        if plus_pos < 0:
             return ""
 
-        # Format after NSString: \x01\x94\x84\x01+\x05<text>\x86
-        # or: \x00\x94\x84\x01+\x05<text>\x86
-        # The length byte comes after \x84\x01+ pattern
-        # Look for the pattern and extract length + text
-        for i in range(len(content) - 2):
-            # Look for length byte followed by text
-            if i >= 3 and content[i - 1] == ord('+'):
-                length = content[i]
-                if length > 0 and i + 1 + length <= len(content):
-                    text = content[i + 1 : i + 1 + length]
-                    # Verify it ends reasonably (with \x86 or similar)
-                    decoded = text.decode("utf-8", errors="ignore").strip().lstrip('\x00')
-                    if decoded:
-                        return decoded
+        length_start = plus_pos + 1
+        if length_start >= len(content):
+            return ""
 
-        # Fallback: try older format with length at position 0 or 1
-        if content[0] == 0x81:  # Two-byte length prefix
-            if len(content) >= 3:
-                length = int.from_bytes(content[1:3], "little")
-                if len(content) >= 3 + length:
-                    return content[3 : 3 + length].decode("utf-8", errors="ignore")
-        elif content[0] < 128:  # Single-byte length
-            length = content[0]
-            if len(content) >= 1 + length:
-                return content[1 : 1 + length].decode("utf-8", errors="ignore")
+        # Variable-width integer: 0-127 = single byte,
+        # 0x81 = next 2 bytes LE (max 65535, covers all iMessage texts)
+        marker = content[length_start]
+        if marker == 0x81:
+            if length_start + 3 > len(content):
+                return ""
+            length = int.from_bytes(content[length_start + 1 : length_start + 3], "little")
+            text_start = length_start + 3
+        elif marker < 128:
+            length = marker
+            text_start = length_start + 1
+        else:
+            return ""
 
-        return ""
+        if length == 0 or text_start + length > len(content):
+            return ""
+
+        return content[text_start : text_start + length].decode("utf-8", errors="ignore")
     except (IndexError, ValueError):
         return ""
 
