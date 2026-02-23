@@ -22,7 +22,7 @@ A popup will appear asking you to install developer tools. Click **Install** and
 ```bash
 git clone https://github.com/ritammehta/groupchat-podcast.git
 cd groupchat-podcast
-pip install .
+python3 -m pip install .
 ```
 
 ### Installing ffmpeg
