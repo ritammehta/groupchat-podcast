@@ -1,6 +1,6 @@
 # groupchat-podcast
 
-Turn any iMessage group chat into a podcast. Each person in the chat gets their own AI-generated voice, and the whole conversation is stitched together into a single MP3 you can listen to like a podcast episode.
+Turn any iMessage group chat into a podcast. Each person in the chat gets their own computer-generated voice, and the whole conversation is stitched together into a single MP3 you can listen to like a podcast episode.
 
 ## What You Need
 
