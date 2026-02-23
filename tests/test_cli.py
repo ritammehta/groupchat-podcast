@@ -7,7 +7,16 @@ from unittest.mock import patch
 
 import pytest
 
-from groupchat_podcast.cli import build_parser, main
+from groupchat_podcast.cli import (
+    build_parser,
+    get_api_key,
+    get_date_range,
+    get_output_path,
+    main,
+    select_group_chat,
+    show_cost_estimate,
+)
+from groupchat_podcast.imessage import GroupChat
 
 
 class TestBuildParser:
@@ -252,3 +261,155 @@ class TestKeyboardInterrupt:
 
         captured = capsys.readouterr()
         assert "Traceback" not in captured.err
+
+
+class TestSelectGroupChat:
+    """Tests for interactive group chat selection via beaupy."""
+
+    def test_returns_chat_id_of_selected_chat(self, mocker, tmp_path):
+        """select_group_chat returns the chat_id of the chat the user picked."""
+        chats = [
+            GroupChat(chat_id=10, display_name="Family", participant_count=4, participants=["a", "b", "c", "d"]),
+            GroupChat(chat_id=20, display_name="Work", participant_count=3, participants=["x", "y", "z"]),
+        ]
+        mocker.patch("groupchat_podcast.cli.list_group_chats", return_value=chats)
+        mocker.patch("beaupy.select", return_value=chats[1])
+
+        result = select_group_chat(tmp_path / "chat.db")
+
+        assert result == 20
+
+    def test_raises_keyboard_interrupt_on_escape(self, mocker, tmp_path):
+        """select_group_chat raises KeyboardInterrupt when user presses Escape."""
+        chats = [
+            GroupChat(chat_id=10, display_name="Family", participant_count=4, participants=["a", "b", "c", "d"]),
+        ]
+        mocker.patch("groupchat_podcast.cli.list_group_chats", return_value=chats)
+        mocker.patch("beaupy.select", return_value=None)
+
+        with pytest.raises(KeyboardInterrupt):
+            select_group_chat(tmp_path / "chat.db")
+
+
+class TestGetApiKey:
+    """Tests for API key retrieval via beaupy."""
+
+    def test_prompts_securely_when_no_env_var(self, mocker):
+        """get_api_key uses a secure prompt when ELEVENLABS_API_KEY is not set."""
+        mocker.patch("groupchat_podcast.cli.load_dotenv")
+        mocker.patch.dict("os.environ", {}, clear=True)
+        mocker.patch("beaupy.prompt", return_value="sk-test-key-123")
+
+        result = get_api_key()
+
+        assert result == "sk-test-key-123"
+
+    def test_raises_keyboard_interrupt_on_escape(self, mocker):
+        """get_api_key raises KeyboardInterrupt when user presses Escape at prompt."""
+        mocker.patch("groupchat_podcast.cli.load_dotenv")
+        mocker.patch.dict("os.environ", {}, clear=True)
+        mocker.patch("beaupy.prompt", return_value=None)
+
+        with pytest.raises(KeyboardInterrupt):
+            get_api_key()
+
+
+class TestGetDateRange:
+    """Tests for interactive date range selection via beaupy."""
+
+    def test_returns_parsed_datetimes(self, mocker):
+        """get_date_range parses user-provided date strings into datetimes."""
+        mocker.patch("beaupy.prompt", side_effect=["2024-03-01", "2024-03-15"])
+
+        start, end = get_date_range()
+
+        assert start == datetime(2024, 3, 1)
+        assert end == datetime(2024, 3, 15, 23, 59, 59)
+
+    def test_raises_keyboard_interrupt_on_escape(self, mocker):
+        """get_date_range raises KeyboardInterrupt when user presses Escape."""
+        mocker.patch("beaupy.prompt", return_value=None)
+
+        with pytest.raises(KeyboardInterrupt):
+            get_date_range()
+
+
+class TestGetOutputPath:
+    """Tests for output path selection via beaupy."""
+
+    def test_returns_path_from_user_input(self, mocker):
+        """get_output_path returns a Path from what the user typed."""
+        mocker.patch("beaupy.prompt", return_value="my_podcast.mp3")
+
+        result = get_output_path()
+
+        assert result == Path("my_podcast.mp3")
+
+    def test_adds_mp3_extension_if_missing(self, mocker):
+        """get_output_path appends .mp3 when user omits it."""
+        mocker.patch("beaupy.prompt", return_value="my_podcast")
+
+        result = get_output_path()
+
+        assert result.suffix == ".mp3"
+
+    def test_raises_keyboard_interrupt_on_escape(self, mocker):
+        """get_output_path raises KeyboardInterrupt when user presses Escape."""
+        mocker.patch("beaupy.prompt", return_value=None)
+
+        with pytest.raises(KeyboardInterrupt):
+            get_output_path()
+
+
+class TestShowCostEstimate:
+    """Tests for cost estimate confirmation via beaupy."""
+
+    def test_returns_true_when_user_confirms(self, mocker):
+        """show_cost_estimate returns True when user confirms generation."""
+        mock_generator = mocker.Mock()
+        mock_generator.estimate_cost.return_value = {
+            "message_count": 10,
+            "characters": 500,
+            "estimated_cost": 0.05,
+        }
+        mocker.patch("beaupy.confirm", return_value=True)
+
+        result = show_cost_estimate(
+            mock_generator, Path("/fake/db"), 1,
+            datetime(2024, 1, 1), datetime(2024, 1, 31),
+        )
+
+        assert result is True
+
+    def test_returns_false_when_user_declines(self, mocker):
+        """show_cost_estimate returns False when user declines generation."""
+        mock_generator = mocker.Mock()
+        mock_generator.estimate_cost.return_value = {
+            "message_count": 10,
+            "characters": 500,
+            "estimated_cost": 0.05,
+        }
+        mocker.patch("beaupy.confirm", return_value=False)
+
+        result = show_cost_estimate(
+            mock_generator, Path("/fake/db"), 1,
+            datetime(2024, 1, 1), datetime(2024, 1, 31),
+        )
+
+        assert result is False
+
+    def test_raises_keyboard_interrupt_on_escape(self, mocker):
+        """show_cost_estimate raises KeyboardInterrupt when user presses Escape."""
+        mock_generator = mocker.Mock()
+        mock_generator.estimate_cost.return_value = {
+            "message_count": 10,
+            "characters": 500,
+            "estimated_cost": 0.05,
+        }
+        mocker.patch("beaupy.confirm", return_value=None)
+
+        with pytest.raises(KeyboardInterrupt):
+            show_cost_estimate(
+                mock_generator, Path("/fake/db"), 1,
+                datetime(2024, 1, 1), datetime(2024, 1, 31),
+            )
