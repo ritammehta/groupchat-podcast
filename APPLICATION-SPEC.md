@@ -64,6 +64,7 @@ Any omitted flags fall back to interactive prompts.
 | `--end-date` | str | Interactive | `YYYY-MM-DD` format |
 | `-o` / `--output` | str | `podcast_YYYYMMDD_HHMMSS.mp3` | Output file path |
 | `--version` | flag | — | Print version and exit |
+| `--skip-checks` | flag | `False` | Skip preflight prerequisite checks |
 
 ## Key Technical Details
 
@@ -75,7 +76,7 @@ Any omitted flags fall back to interactive prompts.
 - **Message merging**: Consecutive same-sender messages within 5 minutes joined with smart punctuation
 - **TTS preprocessing**: Emoji removal, abbreviation expansion (idk→I don't know), caps normalization, repeated punctuation cleanup
 - **Cost model**: ~$0.30 per 1000 characters (ElevenLabs Creator plan)
-- **Preflight checks**: Verifies macOS platform, ffmpeg (PATH + Homebrew fallback), Full Disk Access (file probe), API key before starting
+- **Preflight checks**: Called automatically from `main()` before any interactive prompts. Verifies macOS platform, ffmpeg (PATH + Homebrew fallback), Full Disk Access (file probe), and API key. Bypassed with `--skip-checks`
 - **Error handling**: Top-level handler catches all exceptions; users never see Python tracebacks
 - **Voice assignment**: Search-first flow — input treated as search query unless it looks like a voice ID (20+ alphanumeric chars)
 
@@ -96,7 +97,7 @@ Any omitted flags fall back to interactive prompts.
 
 ## Test Suite
 
-136 tests across 7 files:
+135 tests across 7 files:
 - `test_cli.py` — argument parsing, main() flow, interactive prompts, friendly errors, voice assignment
 - `test_contacts.py` — phone/email normalization, contact DB reading, CLI contact display
 - `test_imessage.py` — message extraction, timestamp conversion, thread reordering
