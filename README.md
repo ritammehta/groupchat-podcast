@@ -39,10 +39,10 @@ If you don't have Homebrew, install it first by following the instructions at [b
 
 1. Create an account at [elevenlabs.io](https://elevenlabs.io)
 2. Go to your profile and copy your API key
-3. Create a file called `.env` in the folder where you'll run the tool, and paste this in:
+3. In Terminal, make sure you're in the `groupchat-podcast` folder, then run this (replacing `your-api-key-here` with the key you copied):
 
-```
-ELEVENLABS_API_KEY=your-api-key-here
+```bash
+echo "ELEVENLABS_API_KEY=your-api-key-here" > .env
 ```
 
 If you skip this step, the tool will ask you for the key each time you run it.
