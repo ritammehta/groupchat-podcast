@@ -389,6 +389,7 @@ def main():
             start_date, end_date = get_date_range()
 
         # Get participants for the chat
+        console.print("\n[dim]Extracting messages and resolving link previews...[/dim]")
         messages = extract_messages(db_path, chat_id, start_date, end_date)
 
         if not messages:

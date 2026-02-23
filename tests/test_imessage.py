@@ -158,18 +158,68 @@ class TestExtractMessages:
         )
         assert attachment_msg is not None
 
-    def test_reformats_urls_in_messages(self, mock_chat_db):
-        """URLs should be reformatted for speech."""
+    def test_replaces_url_with_page_title_in_speech(self, mock_chat_db, mocker):
+        """URLs in messages are replaced with the page title for natural speech."""
+        mocker.patch(
+            "groupchat_podcast.imessage._fetch_url_title",
+
+
+            return_value="Cool Thing - Example Site",
+        )
         start = datetime(2024, 1, 1)
         end = datetime(2024, 1, 31)
 
         messages = extract_messages(mock_chat_db, chat_id=1, start_date=start, end_date=end)
 
-        # Find the message with the URL
-        url_msg = next((m for m in messages if "example.com" in (m.text or "")), None)
+        # msg3: "Check out this link https://example.com/cool-thing"
+        # Should become: "Check out this link: Cool Thing - Example Site"
+        url_msg = next((m for m in messages if "Cool Thing" in (m.text or "")), None)
         assert url_msg is not None
-        # Should be reformatted like "Hey, check this out: https://example.com/cool-thing"
-        assert "check this out" in url_msg.text.lower() or "https://example.com" in url_msg.text
+        assert "https://" not in url_msg.text
+        assert "Cool Thing - Example Site" in url_msg.text
+
+    def test_url_only_message_gets_title(self, mock_chat_db, mocker):
+        """A message that is just a URL becomes 'Check out this link: {title}'."""
+        def mock_fetch(url):
+            if "github.com" in url:
+                return "some/repo: A cool project"
+            return "Other Page"
+
+        mocker.patch(
+            "groupchat_podcast.imessage._fetch_url_title",
+
+
+            side_effect=mock_fetch,
+        )
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 31)
+
+        messages = extract_messages(mock_chat_db, chat_id=1, start_date=start, end_date=end)
+
+        # msg10: "https://github.com/some/repo" - URL-only message
+        url_msg = next((m for m in messages if "cool project" in (m.text or "").lower()), None)
+        assert url_msg is not None
+        assert "https://" not in url_msg.text
+        assert "Check out this link:" in url_msg.text
+
+    def test_falls_back_to_domain_when_title_fetch_fails(self, mock_chat_db, mocker):
+        """When page title can't be fetched, falls back to the domain name."""
+        mocker.patch(
+            "groupchat_podcast.imessage._fetch_url_title",
+
+
+            return_value=None,
+        )
+        start = datetime(2024, 1, 1)
+        end = datetime(2024, 1, 31)
+
+        messages = extract_messages(mock_chat_db, chat_id=1, start_date=start, end_date=end)
+
+        # msg10: "https://github.com/some/repo" - should fall back to domain
+        url_msg = next((m for m in messages if "github.com" in (m.text or "")), None)
+        assert url_msg is not None
+        assert "https://" not in url_msg.text
+        assert "this link: github.com" in url_msg.text
 
     def test_orders_threads_after_parent(self, mock_chat_db):
         """Thread replies should appear immediately after their parent message."""

@@ -1,7 +1,10 @@
 """iMessage database extraction module."""
 
+import functools
 import re
 import sqlite3
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -117,30 +120,74 @@ def _get_attachment_placeholder(mime_type: Optional[str]) -> str:
         return "Look at this file"
 
 
-def _reformat_url_message(text: str) -> str:
-    """Reformat message containing URLs for speech.
+@functools.lru_cache(maxsize=256)
+def _fetch_url_title(url: str) -> Optional[str]:
+    """Fetch the page title for a URL (og:title preferred, then <title>).
 
-    If the message is primarily a URL, prefix with "Hey, check this out:"
+    Returns None on any failure (timeout, DNS, parse error, etc.).
     """
-    # URL pattern
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            html = resp.read(65536).decode("utf-8", errors="ignore")
+
+        # Try og:title first (what iMessage link previews use)
+        og_match = re.search(
+            r'<meta\s[^>]*property=["\']og:title["\']\s[^>]*content=["\']([^"\']+)["\']',
+            html,
+            re.IGNORECASE,
+        )
+        if not og_match:
+            og_match = re.search(
+                r'<meta\s[^>]*content=["\']([^"\']+)["\']\s[^>]*property=["\']og:title["\']',
+                html,
+                re.IGNORECASE,
+            )
+        if og_match:
+            return og_match.group(1).strip()
+
+        # Fall back to <title> tag
+        title_match = re.search(r"<title[^>]*>([^<]+)</title>", html, re.IGNORECASE)
+        if title_match:
+            return title_match.group(1).strip()
+
+    except Exception:
+        pass
+
+    return None
+
+
+def _reformat_url_message(text: str) -> str:
+    """Replace URLs in a message with human-readable link titles for speech."""
     url_pattern = r'https?://[^\s]+'
     urls = re.findall(url_pattern, text)
 
     if not urls:
         return text
 
-    # Check if the message is primarily just URLs
     text_without_urls = re.sub(url_pattern, '', text).strip()
 
+    # Resolve each URL to a readable name
+    readable_parts = []
+    for url in urls:
+        title = _fetch_url_title(url)
+        if not title:
+            # Fall back to domain name
+            domain = urllib.parse.urlparse(url).netloc
+            if domain.startswith("www."):
+                domain = domain[4:]
+            title = domain
+        readable_parts.append(title)
+
     if not text_without_urls:
-        # Message is only URLs
-        return "Hey, check this out: " + " ".join(urls)
-    elif text_without_urls in ["Check out", "check out", "Look at this", "look at this"]:
-        # Already has a prefix, just ensure URL is included
-        return text
+        # Message was only URL(s)
+        return "Check out this link: " + ", ".join(readable_parts)
     else:
-        # Has other text with URL embedded - keep as is but could enhance
-        return text
+        # Replace each URL inline with "this link: {title}"
+        result = text
+        for url, title in zip(urls, readable_parts):
+            result = result.replace(url, "this link: " + title)
+        return result
 
 
 def list_group_chats(db_path: Path) -> List[GroupChat]:

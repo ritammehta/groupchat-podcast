@@ -123,6 +123,8 @@ def mock_chat_db(tmp_path):
         ("msg8", "This is a reply to the first message", None, 3, datetime(2024, 1, 16, 12, 0, 0), 0, 0, 0, None, "msg1"),
         # Message outside date range
         ("msg9", "This is from February", None, 1, datetime(2024, 2, 15, 10, 0, 0), 0, 0, 0, None, None),
+        # URL-only message
+        ("msg10", "https://github.com/some/repo", None, 2, datetime(2024, 1, 15, 10, 7, 0), 0, 0, 0, None, None),
     ]
 
     for msg in messages:
@@ -139,7 +141,7 @@ def mock_chat_db(tmp_path):
     # Link messages to chat
     cursor.executemany(
         "INSERT INTO chat_message_join (chat_id, message_id) VALUES (?, ?)",
-        [(1, i) for i in range(1, 10)],
+        [(1, i) for i in range(1, 11)],
     )
 
     # Add attachment for msg5

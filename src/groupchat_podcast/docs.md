@@ -94,7 +94,9 @@ cli.py
 #### Message Text Processing
 
 - **Attachment placeholders**: Messages with attachments but no text get placeholder text based on MIME type (e.g., "Look at this photo")
-- **URL reformatting**: URL-only messages are prefixed with "Hey, check this out:" for more natural speech
+- **URL title resolution**: `_reformat_url_message()` replaces raw URLs with human-readable page titles so TTS reads naturally. `_fetch_url_title()` makes an HTTP request per URL (5-second timeout, first 64KB of HTML) and extracts `og:title` first (matching iMessage's link preview behavior), then falls back to `<title>` tag. If the fetch fails entirely, the domain name is used (stripped of `www.` prefix)
+- **URL formatting by message type**: URL-only messages become `"Check out this link: {title}"`. Messages with mixed text and URLs replace each URL inline with `"this link: {title}"`
+- **Network I/O during extraction**: Because `_reformat_url_message()` is called from `extract_messages()`, message extraction is no longer a purely offline operation. The CLI displays "Extracting messages and resolving link previews..." to indicate this
 - **Empty message filtering**: Messages without text are skipped during podcast generation
 
 #### Cost Estimation
